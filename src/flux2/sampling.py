@@ -279,8 +279,13 @@ def denoise(
     # extra img tokens (sequence-wise)
     img_cond_seq: Tensor | None = None,
     img_cond_seq_ids: Tensor | None = None,
+    # inpainting parameters (all three required for inpainting)
+    inpaint_mask: Tensor | None = None,   # (B, seq_len, 1), 1=regenerate, 0=keep original
+    orig_img_seq: Tensor | None = None,   # (B, seq_len, C), clean encoded original latents
+    noise_seq: Tensor | None = None,      # (B, seq_len, C), noise used to create starting latents
 ):
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
+    do_inpaint = inpaint_mask is not None and orig_img_seq is not None and noise_seq is not None
     for t_curr, t_prev in zip(timesteps[:-1], timesteps[1:]):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
         img_input = img
@@ -304,6 +309,11 @@ def denoise(
 
         img = img + (t_prev - t_curr) * pred
 
+        # Inpainting: in unmasked regions, replace with noised original at current timestep
+        if do_inpaint:
+            x_orig_t = (1 - t_prev) * orig_img_seq + t_prev * noise_seq
+            img = inpaint_mask * img + (1 - inpaint_mask) * x_orig_t
+
     return img
 
 
@@ -323,7 +333,13 @@ def denoise_cfg(
     guidance: float,
     img_cond_seq: Tensor | None = None,
     img_cond_seq_ids: Tensor | None = None,
+    # inpainting parameters (all three required for inpainting)
+    inpaint_mask: Tensor | None = None,   # (B, seq_len, 1), 1=regenerate, 0=keep original
+    orig_img_seq: Tensor | None = None,   # (B, seq_len, C), clean encoded original latents
+    noise_seq: Tensor | None = None,      # (B, seq_len, C), noise used to create starting latents
 ):
+    do_inpaint = inpaint_mask is not None and orig_img_seq is not None and noise_seq is not None
+
     img = torch.cat([img, img], dim=0)
     img_ids = torch.cat([img_ids, img_ids], dim=0)
 
@@ -331,6 +347,12 @@ def denoise_cfg(
         assert img_cond_seq_ids is not None
         img_cond_seq = torch.cat([img_cond_seq, img_cond_seq], dim=0)
         img_cond_seq_ids = torch.cat([img_cond_seq_ids, img_cond_seq_ids], dim=0)
+
+    # Double inpainting tensors to match CFG batching
+    if do_inpaint:
+        inpaint_mask = torch.cat([inpaint_mask, inpaint_mask], dim=0)
+        orig_img_seq = torch.cat([orig_img_seq, orig_img_seq], dim=0)
+        noise_seq = torch.cat([noise_seq, noise_seq], dim=0)
 
     for t_curr, t_prev in zip(timesteps[:-1], timesteps[1:]):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
@@ -358,6 +380,11 @@ def denoise_cfg(
         pred = torch.cat([pred, pred], dim=0)
 
         img = img + (t_prev - t_curr) * pred
+
+        # Inpainting: in unmasked regions, replace with noised original at current timestep
+        if do_inpaint:
+            x_orig_t = (1 - t_prev) * orig_img_seq + t_prev * noise_seq
+            img = inpaint_mask * img + (1 - inpaint_mask) * x_orig_t
 
     return img.chunk(2)[0]
 

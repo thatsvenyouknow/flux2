@@ -12,6 +12,12 @@ from .autoencoder import AutoEncoder, AutoEncoderParams
 from .model import Flux2, Flux2Params, Klein4BParams, Klein9BParams
 from .text_encoder import load_mistral_small_embedder, load_qwen3_embedder
 
+import os
+env_vars = os.environ
+os.environ["AE_MODEL_PATH"] = env_vars.get("AE_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B/ae.safetensors")
+os.environ["KLEIN_4B_MODEL_PATH"] = env_vars.get("KLEIN_4B_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B/flux-2-klein-4b.safetensors")
+os.environ["KLEIN_4B_BASE_MODEL_PATH"] = env_vars.get("KLEIN_4B_BASE_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B/flux-2-klein-base-4b.safetensors")
+
 FLUX2_MODEL_INFO = {
     "flux.2-klein-4b": {
         "repo_id": "black-forest-labs/FLUX.2-klein-4B",

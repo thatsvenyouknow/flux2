@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import os
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -371,13 +371,20 @@ class Qwen3Embedder(nn.Module):
     ):
         super().__init__()
 
+        if model_spec.endswith("FLUX.2-klein-4B"):
+            text_encoder = os.path.join(model_spec, "text_encoder")
+            tokenizer = os.path.join(model_spec, "tokenizer")
+        else:
+            text_encoder = model_spec
+            tokenizer = model_spec
+
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_spec,
+            text_encoder,
             torch_dtype=None,
             device_map=str(device),
         )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_spec)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer)
         self.max_length = MAX_LENGTH
 
     @torch.no_grad()
@@ -433,4 +440,4 @@ def load_mistral_small_embedder(device: str | torch.device = "cuda") -> Mistral3
 
 
 def load_qwen3_embedder(variant: str, device: str | torch.device = "cuda"):
-    return Qwen3Embedder(model_spec=f"Qwen/Qwen3-{variant}-FP8", device=device)
+    return Qwen3Embedder(model_spec="/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B", device=device)
