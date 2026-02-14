@@ -192,8 +192,6 @@ class Flux2Pipeline:
         # Load explicit conditioning images first
         cond_images = cond_images or []
         img_ctx = [Image.open(cond_image) for cond_image in cond_images]
-        orig_width = None
-        orig_height = None
 
         # Apply match_image_size if specified
         if match_image_size is not None:
@@ -209,8 +207,10 @@ class Flux2Pipeline:
                 print(f"  Matched dimensions from image {match_image_size}: {width}x{height}")
 
         with torch.no_grad():
-            ref_tokens, ref_ids = encode_image_refs(self.ae, img_ctx)
- 
+            #Encode reference images if provided
+            ref_tokens, ref_ids = encode_image_refs(self.ae, img_ctx) if img_ctx else (None, None)
+
+            #Upsample prompt if local mode is selected
             if upsample_prompt_mode == "local":
                 upsampled_prompts = self.text_encoder.upsample_prompt(
                     [prompt], img=[img_ctx] if img_ctx else None
@@ -234,124 +234,34 @@ class Flux2Pipeline:
                 torch.cuda.empty_cache()
                 self.model.to(self.torch_device)
 
-            #I2I placeholder
-            inpaint_mask_seq = None
-            orig_img_seq = None
-            noise_seq = None
-
             if input_image:
-                input_img = Image.open(input_image).convert("RGB")
-                orig_width, orig_height = input_img.size
-
-                # Load inpainting mask (if provided) before any spatial transforms
-                mask_pil = None
-                if inpainting_mask:
-                    mask_pil = Image.open(inpainting_mask).convert("L")
-                    if mask_pil.size != input_img.size:
-                        mask_pil = mask_pil.resize(input_img.size, Image.NEAREST)
-
-                # Letterbox both image and mask together
-                if letterboxing:
-                    letterboxed_img = letterbox_to_multiple_of_x(
-                        input_img, 16, color=letterboxing_color
-                    )
-                    if mask_pil is not None:
-                        # Letterbox mask: pad with 0 (keep original) in border areas
-                        lb_w, lb_h = letterboxed_img.size
-                        mask_letterboxed = Image.new("L", (lb_w, lb_h), 0)
-                        left = (lb_w - input_img.width) // 2
-                        top = (lb_h - input_img.height) // 2
-                        mask_letterboxed.paste(mask_pil, (left, top))
-                        mask_pil = mask_letterboxed
-                    input_img = letterboxed_img
-
-                #Preprocess and encode clean input image 
-                input_tensor = default_prep(input_img, limit_pixels=None, ensure_multiple=16)
-                x_img = self.ae.encode(input_tensor[None].to(self.torch_device))[0].unsqueeze(0).to(torch.bfloat16)
-
-                # Use actual latent-backed output size.
-                _, _, latent_h, latent_w = x_img.shape
-                width = latent_w * 16
-                height = latent_h * 16
-
-                # Generate noise in latent space
-                generator = torch.Generator(device="cuda").manual_seed(seed)
-                noise_latent = torch.randn(
-                    x_img.shape, generator=generator, dtype=torch.bfloat16, device="cuda"
-                )
-
-                # Convert clean latents and noise to sequence format
-                x_clean_seq, x_ids = batched_prc_img(x_img)
-                noise_seq_full, _ = batched_prc_img(noise_latent)
-
-                # Compute full timestep schedule, then truncate based on strength
-                full_timesteps = get_schedule(num_steps, x_clean_seq.shape[1])
-                num_i2i_steps = max(1, int(num_steps * strength))
-                timesteps = full_timesteps[-(num_i2i_steps + 1):]
-                t_start = timesteps[0]
-                print(f"  img2img: strength={strength}, steps={num_i2i_steps}/{num_steps}, t_start={t_start:.4f}")
-
-                # Create noisy latents at t_start: x_t = (1-t)*x_0 + t*noise
-                x = (1 - t_start) * x_clean_seq + t_start * noise_seq_full
-
-                # Prepare inpainting mask in latent sequence format
-                if mask_pil is not None:
-                    # Apply same center crop as default_prep to keep mask aligned
-                    mask_pil = center_crop_to_multiple_of_x(mask_pil, 16)
-                    mask_np = np.array(mask_pil)
-                    mask_bin = (mask_np > 0).astype(np.float32)
-                    mask_tensor = torch.from_numpy(mask_bin).float()
-
-                    # Downsample mask to latent resolution
-                    mask_latent = torch.nn.functional.interpolate(
-                        mask_tensor.unsqueeze(0).unsqueeze(0),  # (1, 1, H, W)
-                        size=(latent_h, latent_w),
-                        mode="nearest",
-                    ).to(torch.bfloat16).to(self.torch_device)
-
-                    # Flatten to sequence format: (1, latent_h*latent_w, 1)
-                    inpaint_mask_seq = rearrange(mask_latent[0], "c h w -> (h w) c").unsqueeze(0)
-                    orig_img_seq = x_clean_seq
-                    noise_seq = noise_seq_full
-                    print(f"  inpainting mask: {mask_bin.sum():.0f}/{mask_bin.size} latent pixels masked")
-            else:
-                shape = (1, 128, height // 16, width // 16)
-                generator = torch.Generator(device="cuda").manual_seed(seed)
-                randn = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device="cuda")
-                x, x_ids = batched_prc_img(randn)
-                timesteps = get_schedule(num_steps, x.shape[1])
-
-            if self.model_info["guidance_distilled"]:
-                x = denoise(
-                    self.model,
-                    x,
-                    x_ids,
+                x, orig_width, orig_height, width, height = self.inpainting(
                     ctx,
                     ctx_ids,
-                    timesteps=timesteps,
-                    guidance=guidance,
-                    img_cond_seq=ref_tokens,
-                    img_cond_seq_ids=ref_ids,
-                    inpaint_mask=inpaint_mask_seq,
-                    orig_img_seq=orig_img_seq,
-                    noise_seq=noise_seq,
+                    ref_tokens,
+                    ref_ids,
+                    input_image,
+                    inpainting_mask,
+                    strength,
+                    letterboxing,
+                    letterboxing_color,
+                    seed,
+                    num_steps,
+                    guidance,
                 )
             else:
-                x = denoise_cfg(
-                    self.model,
-                    x,
-                    x_ids,
+                x = self.text_to_image(
+                    height,
+                    width,
                     ctx,
                     ctx_ids,
-                    timesteps=timesteps,
-                    guidance=guidance,
-                    img_cond_seq=ref_tokens,
-                    img_cond_seq_ids=ref_ids,
-                    inpaint_mask=inpaint_mask_seq,
-                    orig_img_seq=orig_img_seq,
-                    noise_seq=noise_seq,
+                    ref_tokens,
+                    ref_ids,
+                    seed,
+                    num_steps,
+                    guidance,
                 )
-            x = torch.cat(scatter_ids(x, x_ids)).squeeze(2)
+
             x = self.ae.decode(x).float()
             # x = embed_watermark(x)
 
@@ -374,7 +284,227 @@ class Flux2Pipeline:
             img = img.crop((left, top, right, bottom))
 
         return img
-   
+    
+    def text_to_image(
+        self,
+        height: int,
+        width: int,
+        ctx: torch.Tensor,
+        ctx_ids: torch.Tensor,
+        ref_tokens: torch.Tensor,
+        ref_ids: torch.Tensor,
+        seed: int = None,
+        num_steps: int = 4,
+        guidance: float = 4.0
+    ) -> torch.Tensor:
+
+        #Generate random noise in latent space
+        shape = (1, 128, height // 16, width // 16)
+        generator = torch.Generator(device="cuda").manual_seed(seed if seed is not None else random.randint(0, 1000000))
+        randn = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device="cuda")
+
+        #Convert noise to sequence format
+        x, x_ids = batched_prc_img(randn)
+        timesteps = get_schedule(num_steps, x.shape[1])
+
+        #Generate image
+        x = self._denoise(
+            x=x,
+            x_ids=x_ids,
+            ctx=ctx,
+            ctx_ids=ctx_ids,
+            timesteps=timesteps,
+            guidance=guidance,
+            img_cond_seq=ref_tokens,
+            img_cond_seq_ids=ref_ids,
+            inpaint_mask_seq=None,
+            orig_img_seq=None,
+            noise_seq=None,
+        )
+
+        return x
+
+    def inpainting(
+        self, 
+        ctx: torch.Tensor,
+        ctx_ids: torch.Tensor,
+        ref_tokens: torch.Tensor,
+        ref_ids: torch.Tensor,
+        input_image: Path, 
+        inpainting_mask: Path, 
+        strength: float = 0.85, 
+        letterboxing: bool = False, 
+        letterboxing_color: str = "#000000", 
+        seed: int = None, 
+        num_steps: int = 4, 
+        guidance: float = 4.0
+        ) -> tuple[torch.Tensor, int, int, int, int]:
+
+        #I2I placeholder
+        inpaint_mask_seq = None
+        orig_img_seq = None
+        noise_seq = None
+
+        #Load input image
+        input_img = Image.open(input_image).convert("RGB")
+        orig_width, orig_height = input_img.size
+
+        #Load inpainting mask (if provided) before any spatial transforms
+        mask_pil = None
+        if inpainting_mask:
+            mask_pil = Image.open(inpainting_mask).convert("L")
+            if mask_pil.size != input_img.size:
+                mask_pil = mask_pil.resize(input_img.size, Image.NEAREST)
+
+        #Letterbox both image and mask together (Optional)
+        if letterboxing:
+            letterboxed_img = letterbox_to_multiple_of_x(
+                input_img, 16, color=letterboxing_color
+            )
+            if mask_pil is not None:
+                #Letterbox mask: pad with 0 (keep original) in border areas
+                lb_w, lb_h = letterboxed_img.size
+                mask_letterboxed = Image.new("L", (lb_w, lb_h), 0)
+                left = (lb_w - input_img.width) // 2
+                top = (lb_h - input_img.height) // 2
+                mask_letterboxed.paste(mask_pil, (left, top))
+                mask_pil = mask_letterboxed
+            input_img = letterboxed_img
+
+        #Preprocess and encode clean input image 
+        input_tensor = default_prep(input_img, limit_pixels=None, ensure_multiple=16)
+        x_img = self.ae.encode(input_tensor[None].to(self.torch_device))[0].unsqueeze(0).to(torch.bfloat16)
+
+        #Use actual latent-backed output size.
+        _, _, latent_h, latent_w = x_img.shape
+        width = latent_w * 16
+        height = latent_h * 16
+
+        #Generate noise in latent space
+        generator = torch.Generator(device="cuda").manual_seed(seed if seed is not None else random.randint(0, 1000000))
+        noise_latent = torch.randn(x_img.shape, generator=generator, dtype=torch.bfloat16, device="cuda")
+
+        #Convert clean latents and noise to sequence format
+        x_clean_seq, x_ids = batched_prc_img(x_img)
+        noise_seq_full, _ = batched_prc_img(noise_latent)
+
+        #Clean up some variables
+        del x_img, noise_latent, input_tensor
+
+        #Compute full timestep schedule, then truncate based on strength
+        full_timesteps = get_schedule(num_steps, x_clean_seq.shape[1])
+        num_i2i_steps = max(1, int(num_steps * strength))
+        timesteps = full_timesteps[-(num_i2i_steps + 1):]
+        t_start = timesteps[0]
+        print(f"  img2img: strength={strength}, steps={num_i2i_steps}/{num_steps}, t_start={t_start:.4f}")
+
+        #Create noisy latents at t_start: x_t = (1-t)*x_0 + t*noise
+        x = (1 - t_start) * x_clean_seq + t_start * noise_seq_full
+
+        #Prepare inpainting mask in latent sequence format
+        if mask_pil is not None:
+            #Apply same center crop as default_prep to keep mask aligned
+            mask_pil = center_crop_to_multiple_of_x(mask_pil, 16)
+            mask_np = np.array(mask_pil)
+            mask_bin = (mask_np > 0).astype(np.float32)
+            mask_tensor = torch.from_numpy(mask_bin).float()
+
+            #Downsample mask to latent resolution
+            mask_latent = torch.nn.functional.interpolate(
+                mask_tensor.unsqueeze(0).unsqueeze(0),  # (1, 1, H, W)
+                size=(latent_h, latent_w),
+                mode="nearest",
+            ).to(torch.bfloat16).to(self.torch_device)
+
+            #Flatten to sequence format: (1, latent_h*latent_w, 1)
+            inpaint_mask_seq = rearrange(mask_latent[0], "c h w -> (h w) c").unsqueeze(0)
+            orig_img_seq = x_clean_seq
+            noise_seq = noise_seq_full
+            print(f"  inpainting mask: {mask_bin.sum():.0f}/{mask_bin.size} latent pixels masked")
+
+        #Generate image
+        x = self._denoise(
+            x=x,
+            x_ids=x_ids,
+            ctx=ctx,
+            ctx_ids=ctx_ids,
+            timesteps=timesteps,
+            guidance=guidance,
+            img_cond_seq=ref_tokens,
+            img_cond_seq_ids=ref_ids,
+            inpaint_mask_seq=inpaint_mask_seq,
+            orig_img_seq=orig_img_seq,
+            noise_seq=noise_seq,
+        )
+
+        return x, orig_width, orig_height, width, height
+
+    def outpainting(
+        self,
+        ctx: torch.Tensor,
+        ctx_ids: torch.Tensor,
+        ref_tokens: torch.Tensor,
+        ref_ids: torch.Tensor,
+        input_image: Path,
+        inpainting_mask: Path,
+    ) -> torch.Tensor:
+
+        #Load input image
+        input_img = Image.open(input_image).convert("RGB")
+        orig_width, orig_height = input_img.size
+
+
+
+
+
+    def _denoise(
+        self,
+        x: torch.Tensor,
+        x_ids: torch.Tensor,
+        ctx: torch.Tensor,
+        ctx_ids: torch.Tensor,
+        timesteps: list[float],
+        guidance: float,
+        img_cond_seq: torch.Tensor,
+        img_cond_seq_ids: torch.Tensor,
+        inpaint_mask_seq: torch.Tensor | None = None,
+        orig_img_seq: torch.Tensor | None = None,
+        noise_seq: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+
+        if self.model_info["guidance_distilled"]:
+            x = denoise(
+                self.model,
+                x,
+                x_ids,
+                ctx,
+                ctx_ids,
+                timesteps=timesteps,
+                guidance=guidance,
+                img_cond_seq=img_cond_seq,
+                img_cond_seq_ids=img_cond_seq_ids,
+                inpaint_mask=inpaint_mask_seq,
+                orig_img_seq=orig_img_seq,
+                noise_seq=noise_seq,
+            )
+        else:
+            x = denoise_cfg(
+                self.model,
+                x,
+                x_ids,
+                ctx,
+                ctx_ids,
+                timesteps=timesteps,
+                guidance=guidance,
+                img_cond_seq=img_cond_seq,
+                img_cond_seq_ids=img_cond_seq_ids,
+                inpaint_mask=inpaint_mask_seq,
+                orig_img_seq=orig_img_seq,
+                noise_seq=noise_seq,
+            )
+        
+        return torch.cat(scatter_ids(x, x_ids)).squeeze(2)
+
 
 if __name__ == "__main__":
     from pathlib import Path as _Path
