@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageFilter
 from streamlit_drawable_canvas import st_canvas
 
 
@@ -82,7 +82,7 @@ def main():
     defaults = MODEL_DEFAULTS[MODEL_NAME]
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab_t2i, tab_inpaint = st.tabs(["Text to Image", "Inpainting"])
+    tab_t2i, tab_inpaint, tab_outpaint = st.tabs(["Text to Image", "Inpainting", "Outpainting"])
 
     # ── TAB 1: Text to Image ────────────────────────────────────────────────
     with tab_t2i:
@@ -231,6 +231,141 @@ def main():
                     st.image(st.session_state["result_inp"], caption="Result", width="stretch")
         else:
             st.info("Upload an image to get started with inpainting.")
+
+    # ── TAB 3: Outpainting ──────────────────────────────────────────────────
+    with tab_outpaint:
+        prompt_out = st.text_area(
+            "Prompt",
+            value="Remove the green paddings that surround the image and show what is behind them",
+            height=100,
+            key="out_prompt",
+        )
+
+        uploaded_out = st.file_uploader(
+            "Upload input image", type=["png", "jpg", "jpeg"], key="out_upload"
+        )
+
+        if uploaded_out is not None:
+            input_img_out = Image.open(uploaded_out).convert("RGB")
+            orig_w, orig_h = input_img_out.size
+            st.caption(f"Original size: {orig_w} x {orig_h}")
+
+            # Target dimensions
+            col_tw, col_th = st.columns(2)
+            with col_tw:
+                target_w = st.number_input(
+                    "Target width", value=max(orig_w + 256, 1024),
+                    min_value=orig_w, max_value=4096, step=16, key="out_tw"
+                )
+            with col_th:
+                target_h = st.number_input(
+                    "Target height", value=max(orig_h + 256, 1024),
+                    min_value=orig_h, max_value=4096, step=16, key="out_th"
+                )
+
+            # Round to multiple of 16
+            target_w = (target_w // 16) * 16
+            target_h = (target_h // 16) * 16
+
+            # Position
+            position = st.selectbox(
+                "Image placement",
+                ["Center", "Left", "Right", "Top", "Bottom"],
+                index=0,
+                key="out_pos",
+            )
+
+            # Compute offset from position name
+            pos_map = {
+                "Center": (None, None),
+                "Left": (0, None),
+                "Right": (target_w - orig_w, None),
+                "Top": (None, 0),
+                "Bottom": (None, target_h - orig_h),
+            }
+            off_x, off_y = pos_map[position]
+
+            # Fill mode and strength
+            fill_mode = st.selectbox(
+                "Border fill mode",
+                ["Solid Color", "Reflect", "Blur", "Edge Repeat"],
+                index=0,
+                key="out_fill_mode",
+                help="How to initialize the border area before generation. "
+                     "Reflect and Blur produce more natural results than solid color.",
+            )
+            fill_mode_map = {
+                "Solid Color": "color",
+                "Reflect": "reflect",
+                "Blur": "blur",
+                "Edge Repeat": "edge",
+            }
+            fill_mode_val = fill_mode_map[fill_mode]
+
+            fill_color = "#09F507"
+            if fill_mode == "Solid Color":
+                fill_color = st.color_picker("Fill color", value=fill_color, key="out_fill")
+
+            strength_out = st.slider("Strength", 0.5, 1.0, 1.0, 0.05, key="out_strength")
+
+            # Preview: show placement on canvas with chosen fill mode
+            paste_x = off_x if off_x is not None else (target_w - orig_w) // 2
+            paste_y = off_y if off_y is not None else (target_h - orig_h) // 2
+            pad_l, pad_t = paste_x, paste_y
+            pad_r = target_w - (paste_x + orig_w)
+            pad_b = target_h - (paste_y + orig_h)
+            img_arr = np.array(input_img_out)
+
+            if fill_mode_val == "color":
+                preview = Image.new("RGB", (target_w, target_h), fill_color)
+                preview.paste(input_img_out, (paste_x, paste_y))
+            elif fill_mode_val in ("reflect", "edge"):
+                np_mode = "reflect" if fill_mode_val == "reflect" else "edge"
+                preview_arr = np.pad(img_arr, ((pad_t, pad_b), (pad_l, pad_r), (0, 0)), mode=np_mode)
+                preview = Image.fromarray(preview_arr)
+            else:  # blur
+                preview_arr = np.pad(img_arr, ((pad_t, pad_b), (pad_l, pad_r), (0, 0)), mode="edge")
+                preview = Image.fromarray(preview_arr)
+                blurred = preview.filter(ImageFilter.GaussianBlur(radius=max(pad_l, pad_t, pad_r, pad_b) // 2))
+                blur_blend = Image.new("L", (target_w, target_h), 255)
+                blur_blend.paste(Image.new("L", (orig_w, orig_h), 0), (paste_x, paste_y))
+                blur_blend = blur_blend.filter(ImageFilter.GaussianBlur(radius=32))
+                preview = Image.composite(blurred, preview, blur_blend)
+
+            st.image(preview, caption=f"Preview ({fill_mode}): {target_w} x {target_h}", width="stretch")
+
+            if st.button("Generate", key="out_gen", type="primary"):
+                input_path = save_uploaded_to_temp(uploaded_out)
+                with st.spinner("Generating..."):
+                    try:
+                        result = pipeline.generate(
+                            prompt=prompt_out,
+                            width=target_w,
+                            height=target_h,
+                            num_steps=defaults["num_steps"],
+                            guidance=defaults["guidance"],
+                            seed=seed,
+                            input_image=input_path,
+                            i2i_mode="outpainting",
+                            strength=strength_out,
+                            offset_x=off_x,
+                            offset_y=off_y,
+                            fill_mode=fill_mode_val,
+                            fill_color=fill_color,
+                        )
+                        st.session_state["result_out"] = result
+                    except Exception as e:
+                        st.error(f"Generation failed: {e}")
+
+            # Persist result across reruns
+            if "result_out" in st.session_state:
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.image(preview, caption="Input placement", width="stretch")
+                with col_b:
+                    st.image(st.session_state["result_out"], caption="Outpainted result", width="stretch")
+        else:
+            st.info("Upload an image to get started with outpainting.")
 
 
 if __name__ == "__main__":
