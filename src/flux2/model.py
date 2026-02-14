@@ -2,8 +2,41 @@ import math
 from dataclasses import dataclass, field
 
 import torch
+import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor, nn
+
+
+class FP8Linear(nn.Module):
+    """Drop-in nn.Linear replacement that stores weights in FP8 (~1 byte/param).
+
+    Weights are kept as float8_e4m3fn and dequantized to the input dtype
+    on the fly: ``out = x @ (weight.to(dtype) * weight_scale).T + bias``.
+    """
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = False):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        # Placeholders – overwritten by load_state_dict(..., assign=True)
+        self.weight = nn.Parameter(
+            torch.empty(out_features, in_features), requires_grad=False
+        )
+        self.weight_scale = nn.Parameter(torch.empty(()), requires_grad=False)
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features), requires_grad=False)
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, x: Tensor) -> Tensor:
+        weight = self.weight.to(x.dtype) * self.weight_scale.to(x.dtype)
+        return F.linear(x, weight, self.bias)
+
+    def extra_repr(self) -> str:
+        return (
+            f"in_features={self.in_features}, out_features={self.out_features}, "
+            f"bias={self.bias is not None}, fp8=True"
+        )
 
 
 @dataclass
