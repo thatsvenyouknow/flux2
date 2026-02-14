@@ -7,7 +7,7 @@ Run with:
 
 import tempfile
 from pathlib import Path
-
+import torch
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageFilter
@@ -19,9 +19,19 @@ from streamlit_drawable_canvas import st_canvas
 
 @st.cache_resource
 def load_pipeline(model_name: str):
+    """Load pipeline for a model with its configured optimizations."""
     from flux2.pipeline import Flux2Pipeline
+    from flux2.util import get_model_optimizations
 
-    return Flux2Pipeline(model_name, cpu_offloading=True)
+    opts = get_model_optimizations(model_name)
+    pipe = Flux2Pipeline(
+        model_name,
+        cpu_offloading=opts["cpu_offloading"],
+        quantize_text_encoder=opts["quantize_text_encoder"],
+        compile_model=opts["compile_model"],
+    )
+    pipe.warmup()
+    return pipe
 
 
 # ── Temp-file helpers (pipeline expects paths) ──────────────────────────────
@@ -43,24 +53,43 @@ def save_pil_to_temp(pil_image: Image.Image, suffix=".png") -> Path:
     return Path(tmp.name)
 
 
-# ── Model constants ──────────────────────────────────────────────────────────
+# ── Model constants (from util.FLUX2_MODEL_INFO) ──────────────────────────────
 
-MODEL_DEFAULTS = {
-    "flux.2-klein-4b": {"num_steps": 4, "guidance": 1.0},
-}
-MODEL_NAME = "flux.2-klein-4b"
+def _get_model_options():
+    from flux2.util import FLUX2_MODEL_INFO
+    return list(FLUX2_MODEL_INFO.keys())
+
+
+def _get_defaults(model_name: str):
+    from flux2.util import FLUX2_MODEL_INFO
+    info = FLUX2_MODEL_INFO.get(model_name)
+    return info["defaults"] if info else {"num_steps": 4, "guidance": 4.0}
+
+
+def _get_optimizations(model_name: str):
+    from flux2.util import get_model_optimizations
+    return get_model_optimizations(model_name)
 
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
 
 def main():
-    st.set_page_config(page_title="FLUX.2 Generator", layout="wide")
-    st.title("FLUX.2 Image Generator")
+    st.set_page_config(page_title="FLUX.2 [Klein] Playground", layout="wide")
+    st.title("FLUX.2 [Klein] Playground")
 
     # ── Sidebar ──────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Settings")
+
+        model_options = _get_model_options()
+        model_name = st.selectbox(
+            "Model",
+            options=model_options,
+            index=0,
+            key="model_select",
+            help="Switch between available FLUX.2 [klein] models. Loading a new model may take a moment.",
+        )
 
         seed = st.number_input("Seed", value=42, min_value=0, step=1)
         random_seed = st.checkbox("Random seed")
@@ -70,16 +99,42 @@ def main():
             seed = random.randint(0, 2**32 - 1)
             st.caption(f"Seed: {seed}")
 
-        st.divider()
-        st.caption(
-            f"Model: **{MODEL_NAME}** — "
-            f"steps: {MODEL_DEFAULTS[MODEL_NAME]['num_steps']}, "
-            f"guidance: {MODEL_DEFAULTS[MODEL_NAME]['guidance']} (fixed)"
+        defaults = _get_defaults(model_name)
+        num_steps = st.number_input(
+            "Steps",
+            value=defaults["num_steps"],
+            min_value=1,
+            max_value=100,
+            step=1,
+            key=f"num_steps_{model_name}",
+            help=f"Recommended number of steps: {defaults['num_steps']}.",
+        )
+        guidance = st.number_input(
+            "Guidance",
+            value=defaults["guidance"],
+            min_value=0.5,
+            max_value=10.0,
+            step=0.1,
+            format="%.1f",
+            key=f"guidance_{model_name}",
+            help=f"Recommended guidance strength: {defaults['guidance']}.",
         )
 
-    # Load pipeline (cached)
-    pipeline = load_pipeline(MODEL_NAME)
-    defaults = MODEL_DEFAULTS[MODEL_NAME]
+        st.divider()
+        st.subheader("Optimizations")
+        opts = _get_optimizations(model_name)
+        st.caption("Active for this model:")
+        st.markdown(f"{'✅' if opts['quantize_text_encoder'] else '⬜'} INT8 text encoder")
+        st.markdown(f"{'✅' if opts['compile_model'] else '⬜'} torch.compile")
+        st.markdown(f"{'✅' if opts['cpu_offloading'] else '⬜'} CPU offloading")
+
+    # Load pipeline (cached per model). When switching models, clear old pipeline
+    # from cache and force GC so the 9B model can fit (24GB GPU).
+    if "pipeline_model" in st.session_state and st.session_state["pipeline_model"] != model_name:
+        load_pipeline.clear()
+        torch.cuda.empty_cache()
+    st.session_state["pipeline_model"] = model_name
+    pipeline = load_pipeline(model_name)
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
     tab_t2i, tab_inpaint, tab_outpaint = st.tabs(["Text to Image", "Inpainting", "Outpainting"])
@@ -121,8 +176,8 @@ def main():
                         prompt=prompt,
                         width=width,
                         height=height,
-                        num_steps=defaults["num_steps"],
-                        guidance=defaults["guidance"],
+                        num_steps=num_steps,
+                        guidance=guidance,
                         seed=seed,
                         cond_images=cond_paths,
                     )
@@ -209,8 +264,8 @@ def main():
                         try:
                             result = pipeline.generate(
                                 prompt=prompt_inp,
-                                num_steps=defaults["num_steps"],
-                                guidance=defaults["guidance"],
+                                num_steps=num_steps,
+                                guidance=guidance,
                                 seed=seed,
                                 input_image=input_path,
                                 inpainting_mask=mask_path,
@@ -342,8 +397,8 @@ def main():
                             prompt=prompt_out,
                             width=target_w,
                             height=target_h,
-                            num_steps=defaults["num_steps"],
-                            guidance=defaults["guidance"],
+                            num_steps=num_steps,
+                            guidance=guidance,
                             seed=seed,
                             input_image=input_path,
                             i2i_mode="outpainting",
