@@ -368,20 +368,31 @@ class Qwen3Embedder(nn.Module):
         self,
         model_spec: str,
         device: str | torch.device = "cuda",
+        load_in_8bit: bool = False,
     ):
         super().__init__()
 
-        if model_spec.endswith("FLUX.2-klein-4B"):
+        if model_spec.endswith("FLUX.2-klein-4B") or model_spec.endswith("FLUX.2-klein-9B"):
             text_encoder = os.path.join(model_spec, "text_encoder")
             tokenizer = os.path.join(model_spec, "tokenizer")
         else:
             text_encoder = model_spec
             tokenizer = model_spec
 
+        # Configure INT8 quantization if requested (~4GB instead of ~8GB VRAM)
+        quantization_config = None
+        if load_in_8bit:
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=6.0,
+            )
+
         self.model = AutoModelForCausalLM.from_pretrained(
             text_encoder,
-            torch_dtype=None,
+            torch_dtype=None if load_in_8bit else torch.bfloat16,
             device_map=str(device),
+            quantization_config=quantization_config,
         )
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer)
@@ -435,9 +446,16 @@ class Qwen3Embedder(nn.Module):
         raise NotImplementedError("Qwen3Embedder does not support upsampling")
 
 
-def load_mistral_small_embedder(device: str | torch.device = "cuda") -> Mistral3SmallEmbedder:
+def load_mistral_small_embedder(device: str | torch.device = "cuda", **kwargs) -> Mistral3SmallEmbedder:
     return Mistral3SmallEmbedder().to(device)
 
 
-def load_qwen3_embedder(variant: str, device: str | torch.device = "cuda"):
-    return Qwen3Embedder(model_spec="/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B", device=device)
+def load_qwen3_embedder(variant: str, device: str | torch.device = "cuda", load_in_8bit: bool = False):
+    if variant == "4B":
+        model_spec = "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B"
+    elif variant == "8B":
+        model_spec = "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-9B"
+    else:
+        raise ValueError(f"Invalid variant: {variant}")
+
+    return Qwen3Embedder(model_spec=model_spec,device=device,load_in_8bit=load_in_8bit)
