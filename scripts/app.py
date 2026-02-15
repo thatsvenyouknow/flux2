@@ -5,6 +5,7 @@ Run with:
     streamlit run scripts/app.py
 """
 
+import threading
 import tempfile
 from pathlib import Path
 import torch
@@ -13,6 +14,29 @@ import streamlit as st
 from PIL import Image, ImageFilter
 from streamlit_drawable_canvas import st_canvas
 
+from flux2.pipeline import GenerationOOMError
+
+
+# ── GPU memory helpers ──────────────────────────────────────────────────────
+def get_gpu_memory_info(device: int = 0) -> dict:
+    """Return GPU memory stats in MB.
+
+    Keys: total, allocated, reserved, free_in_reserved, free_total.
+    - *free_total* = total - allocated  (usable after empty_cache)
+    - *free_in_reserved* = reserved - allocated (usable right now without new alloc)
+    """
+    if not torch.cuda.is_available():
+        return {"total": 0, "allocated": 0, "reserved": 0, "free_in_reserved": 0, "free_total": 0}
+    total = torch.cuda.get_device_properties(device).total_memory / 1024**2
+    allocated = torch.cuda.memory_allocated(device) / 1024**2
+    reserved = torch.cuda.memory_reserved(device) / 1024**2
+    return {
+        "total": round(total),
+        "allocated": round(allocated),
+        "reserved": round(reserved),
+        "free_in_reserved": round(reserved - allocated),
+        "free_total": round(total - allocated),
+    }
 
 # ── Pipeline (cached across reruns) ──────────────────────────────────────────
 
@@ -32,6 +56,17 @@ def load_pipeline(model_name: str):
     )
     pipe.warmup()
     return pipe
+
+
+@st.cache_resource
+def get_gpu_lock():
+    """Global lock shared across all Streamlit sessions.
+
+    Ensures only one GPU operation (generation or model switch) runs at a time.
+    Streamlit runs each user session in a separate thread, so threading.Lock
+    is sufficient (the GIL is released during CUDA kernel execution).
+    """
+    return threading.Lock()
 
 
 # ── Temp-file helpers (pipeline expects paths) ──────────────────────────────
@@ -69,6 +104,20 @@ def _get_defaults(model_name: str):
 def _get_optimizations(model_name: str):
     from flux2.util import get_model_optimizations
     return get_model_optimizations(model_name)
+
+
+def _handle_generation_error(e: Exception):
+    """Show appropriate error message for generation failures."""
+    if isinstance(e, GenerationOOMError):
+        st.error(
+            f"**Out of GPU memory.** {e}\n\n"
+            "The GPU cache has been cleared automatically. You can retry with:\n"
+            "- Smaller output resolution\n"
+            "- Fewer or smaller reference images\n"
+            "- Click **Clear GPU cache** in the sidebar if memory stays high"
+        )
+    else:
+        st.error(f"Generation failed: {e}")
 
 
 # ── App ──────────────────────────────────────────────────────────────────────
@@ -128,13 +177,38 @@ def main():
         st.markdown(f"{'✅' if opts['compile_model'] else '⬜'} torch.compile")
         st.markdown(f"{'✅' if opts['cpu_offloading'] else '⬜'} CPU offloading")
 
-    # Load pipeline (cached per model). When switching models, clear old pipeline
-    # from cache and force GC so the 9B model can fit (24GB GPU).
+        # ── GPU info ──────────────────────────────────────────────────────
+        st.divider()
+        gpu_name = torch.cuda.get_device_properties(0).name if torch.cuda.is_available() else "No GPU"
+        st.subheader(f"VRAM (models)")
+        st.caption(gpu_name)
+        vram_placeholder = st.empty()
+
+        if st.button("Clear GPU cache", key="clear_cache"):
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            st.rerun()
+
+    # Load pipeline (cached per model). When switching models, acquire the GPU
+    # lock first so we don't destroy the pipeline while another session is generating.
+    gpu_lock = get_gpu_lock()
     if "pipeline_model" in st.session_state and st.session_state["pipeline_model"] != model_name:
-        load_pipeline.clear()
-        torch.cuda.empty_cache()
+        with gpu_lock:
+            load_pipeline.clear()
+            torch.cuda.empty_cache()
     st.session_state["pipeline_model"] = model_name
     pipeline = load_pipeline(model_name)
+
+    # ── Update VRAM bar (reflects model weights, not generation) ──────────
+    mem = get_gpu_memory_info()
+    with vram_placeholder.container():
+        if mem["total"] > 0:
+            used_pct = mem["allocated"] / mem["total"]
+            st.progress(used_pct, text=f"{mem['allocated']}MB / {mem['total']}MB")
+            st.caption(f"Free: {mem['free_total']}MB")
+        else:
+            st.warning("No GPU detected")
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
     tab_t2i, tab_inpaint, tab_outpaint = st.tabs(["Text to Image", "Inpainting", "Outpainting"])
@@ -170,8 +244,10 @@ def main():
 
         if st.button("Generate", key="t2i_gen", type="primary"):
             cond_paths = [save_uploaded_to_temp(f) for f in cond_uploads] if cond_uploads else None
-            with st.spinner("Generating..."):
-                try:
+            status = st.status("Queued -- waiting for GPU..." if gpu_lock.locked() else "Generating...", expanded=False)
+            try:
+                with gpu_lock:
+                    status.update(label="Generating...", state="running")
                     result = pipeline.generate(
                         prompt=prompt,
                         width=width,
@@ -182,8 +258,10 @@ def main():
                         cond_images=cond_paths,
                     )
                     st.session_state["result_t2i"] = result
-                except Exception as e:
-                    st.error(f"Generation failed: {e}")
+                status.update(label="Done", state="complete")
+            except Exception as e:
+                status.update(label="Failed", state="error")
+                _handle_generation_error(e)
 
         # Persist result across reruns
         if "result_t2i" in st.session_state:
@@ -228,6 +306,20 @@ def main():
                 key="inpaint_canvas",
             )
 
+            # Reference images (optional)
+            cond_uploads_inp = st.file_uploader(
+                "Reference images (optional)",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+                key="inp_cond",
+                help="Upload images whose content should guide the inpainted area (e.g. a logo to paint in).",
+            )
+            if cond_uploads_inp:
+                cols = st.columns(min(len(cond_uploads_inp), 4))
+                for i, f in enumerate(cond_uploads_inp):
+                    with cols[i % 4]:
+                        st.image(f, caption=f.name, width="stretch")
+
             # Generation settings
             col_s, col_l = st.columns(2)
             with col_s:
@@ -259,9 +351,12 @@ def main():
 
                     input_path = save_uploaded_to_temp(uploaded_file)
                     mask_path = save_pil_to_temp(mask_pil)
+                    cond_paths_inp = [save_uploaded_to_temp(f) for f in cond_uploads_inp] if cond_uploads_inp else None
 
-                    with st.spinner("Generating..."):
-                        try:
+                    status = st.status("Queued -- waiting for GPU..." if gpu_lock.locked() else "Generating...", expanded=False)
+                    try:
+                        with gpu_lock:
+                            status.update(label="Generating...", state="running")
                             result = pipeline.generate(
                                 prompt=prompt_inp,
                                 num_steps=num_steps,
@@ -272,10 +367,13 @@ def main():
                                 strength=strength,
                                 letterboxing=letterboxing,
                                 i2i_mode="inpainting",
+                                cond_images=cond_paths_inp,
                             )
                             st.session_state["result_inp"] = result
-                        except Exception as e:
-                            st.error(f"Generation failed: {e}")
+                        status.update(label="Done", state="complete")
+                    except Exception as e:
+                        status.update(label="Failed", state="error")
+                        _handle_generation_error(e)
 
             # Persist result across reruns
             if "result_inp" in st.session_state:
@@ -363,6 +461,20 @@ def main():
 
             strength_out = st.slider("Strength", 0.5, 1.0, 1.0, 0.05, key="out_strength")
 
+            # Reference images (optional)
+            cond_uploads_out = st.file_uploader(
+                "Reference images (optional)",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+                key="out_cond",
+                help="Upload images whose content should guide the outpainted area.",
+            )
+            if cond_uploads_out:
+                cols = st.columns(min(len(cond_uploads_out), 4))
+                for i, f in enumerate(cond_uploads_out):
+                    with cols[i % 4]:
+                        st.image(f, caption=f.name, width="stretch")
+
             # Preview: show placement on canvas with chosen fill mode
             paste_x = off_x if off_x is not None else (target_w - orig_w) // 2
             paste_y = off_y if off_y is not None else (target_h - orig_h) // 2
@@ -391,8 +503,11 @@ def main():
 
             if st.button("Generate", key="out_gen", type="primary"):
                 input_path = save_uploaded_to_temp(uploaded_out)
-                with st.spinner("Generating..."):
-                    try:
+                cond_paths_out = [save_uploaded_to_temp(f) for f in cond_uploads_out] if cond_uploads_out else None
+                status = st.status("Queued -- waiting for GPU..." if gpu_lock.locked() else "Generating...", expanded=False)
+                try:
+                    with gpu_lock:
+                        status.update(label="Generating...", state="running")
                         result = pipeline.generate(
                             prompt=prompt_out,
                             width=target_w,
@@ -407,10 +522,13 @@ def main():
                             offset_y=off_y,
                             fill_mode=fill_mode_val,
                             fill_color=fill_color,
+                            cond_images=cond_paths_out,
                         )
                         st.session_state["result_out"] = result
-                    except Exception as e:
-                        st.error(f"Generation failed: {e}")
+                    status.update(label="Done", state="complete")
+                except Exception as e:
+                    status.update(label="Failed", state="error")
+                    _handle_generation_error(e)
 
             # Persist result across reruns
             if "result_out" in st.session_state:
