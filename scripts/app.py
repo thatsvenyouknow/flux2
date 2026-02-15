@@ -3,6 +3,8 @@ Streamlit app for FLUX.2 image generation.
 
 Run with:
     streamlit run scripts/app.py
+
+Dependencies: pip install -r scripts/requirements-app.txt
 """
 
 import io
@@ -14,6 +16,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageFilter
 from streamlit_drawable_canvas import st_canvas
+from streamlit_image_comparison import image_comparison
 
 from flux2.pipeline import GenerationOOMError
 
@@ -68,6 +71,16 @@ def get_gpu_lock():
     is sufficient (the GIL is released during CUDA kernel execution).
     """
     return threading.Lock()
+
+
+@st.cache_resource
+def get_loaded_model_tracker():
+    """Global tracker for which model is currently loaded.
+
+    Unlike st.session_state this survives page refreshes and is shared across
+    sessions, so we always know what load_pipeline has cached.
+    """
+    return {"name": None}
 
 
 # ── Temp-file helpers (pipeline expects paths) ──────────────────────────────
@@ -193,12 +206,15 @@ def main():
 
     # Load pipeline (cached per model). When switching models, acquire the GPU
     # lock first so we don't destroy the pipeline while another session is generating.
+    # Uses a global tracker (not session_state) so page refreshes don't lose track
+    # of what's loaded — preventing double-load OOM.
     gpu_lock = get_gpu_lock()
-    if "pipeline_model" in st.session_state and st.session_state["pipeline_model"] != model_name:
+    loaded_model = get_loaded_model_tracker()
+    if loaded_model["name"] is not None and loaded_model["name"] != model_name:
         with gpu_lock:
             load_pipeline.clear()
             torch.cuda.empty_cache()
-    st.session_state["pipeline_model"] = model_name
+    loaded_model["name"] = model_name
     pipeline = load_pipeline(model_name)
 
     # ── Update VRAM bar (reflects model weights, not generation) ──────────
@@ -284,12 +300,21 @@ def main():
             key="inp_prompt",
         )
 
+        inp_upload_key = st.session_state.get("inpaint_upload_key", 0)
         uploaded_file = st.file_uploader(
-            "Upload input image", type=["png", "jpg", "jpeg"], key="inp_upload"
+            "Upload input image", type=["png", "jpg", "jpeg"], key=f"inp_upload_{inp_upload_key}"
         )
 
+        # Input can be from upload or from "Use as input" (previous result)
         if uploaded_file is not None:
             input_img = Image.open(uploaded_file).convert("RGB")
+            st.session_state["inpaint_input"] = input_img
+        elif "inpaint_input" in st.session_state:
+            input_img = st.session_state["inpaint_input"]
+        else:
+            input_img = None
+
+        if input_img is not None:
             orig_w, orig_h = input_img.size
             st.caption(f"Image size: {orig_w} x {orig_h}")
 
@@ -302,6 +327,7 @@ def main():
             canvas_w = int(orig_w * scale)
             canvas_h = int(orig_h * scale)
 
+            inp_canvas_key = st.session_state.get("inpaint_canvas_key", 0)
             st.write("Paint the area you want to regenerate (red = masked):")
             canvas_result = st_canvas(
                 fill_color="rgba(255, 0, 0, 0)",
@@ -311,7 +337,7 @@ def main():
                 drawing_mode="freedraw",
                 height=canvas_h,
                 width=canvas_w,
-                key="inpaint_canvas",
+                key=f"inpaint_canvas_{inp_canvas_key}",
             )
 
             # Reference images (optional)
@@ -357,7 +383,7 @@ def main():
                     # Scale mask back to original image dimensions
                     mask_pil = mask_pil.resize((orig_w, orig_h), Image.NEAREST)
 
-                    input_path = save_uploaded_to_temp(uploaded_file)
+                    input_path = save_uploaded_to_temp(uploaded_file) if uploaded_file else save_pil_to_temp(input_img)
                     mask_path = save_pil_to_temp(mask_pil)
                     cond_paths_inp = [save_uploaded_to_temp(f) for f in cond_uploads_inp] if cond_uploads_inp else None
 
@@ -385,18 +411,27 @@ def main():
 
             # Persist result across reruns
             if "result_inp" in st.session_state:
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.image(input_img, caption="Original", width="stretch")
-                with col_b:
-                    img = st.session_state["result_inp"]
-                    img_col, dl_col = st.columns([20, 1])
-                    with img_col:
-                        st.image(img, caption=f"Result ({img.width}x{img.height})", width="stretch")
-                    with dl_col:
-                        buf = io.BytesIO()
-                        img.save(buf, format="PNG")
-                        st.download_button("↓", data=buf.getvalue(), file_name="inpainted.png", mime="image/png", key="dl_inp", help="Download image")
+                img = st.session_state["result_inp"]
+                comp_col, dl_col = st.columns([20, 1])
+                with comp_col:
+                    image_comparison(
+                        img1=input_img,
+                        img2=img,
+                        label1="Original",
+                        label2=f"Result ({img.width}x{img.height})",
+                        starting_position=50,
+                        make_responsive=True,
+                    )
+                with dl_col:
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    st.download_button("↓", data=buf.getvalue(), file_name="inpainted.png", mime="image/png", key="dl_inp", help="Download image")
+                    if st.button("↻", key="inp_use_as_input", help="Use result as input for next inpainting"):
+                        st.session_state["inpaint_input"] = img.copy()
+                        st.session_state["inpaint_upload_key"] = inp_upload_key + 1
+                        st.session_state["inpaint_canvas_key"] = inp_canvas_key + 1
+                        del st.session_state["result_inp"]
+                        st.rerun()
         else:
             st.info("Upload an image to get started with inpainting.")
 
@@ -547,18 +582,21 @@ def main():
 
             # Persist result across reruns
             if "result_out" in st.session_state:
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.image(preview, caption="Input placement", width="stretch")
-                with col_b:
-                    img = st.session_state["result_out"]
-                    img_col, dl_col = st.columns([20, 1])
-                    with img_col:
-                        st.image(img, caption=f"Outpainted result ({img.width}x{img.height})", width="stretch")
-                    with dl_col:
-                        buf = io.BytesIO()
-                        img.save(buf, format="PNG")
-                        st.download_button("↓", data=buf.getvalue(), file_name="outpainted.png", mime="image/png", key="dl_out", help="Download image")
+                img = st.session_state["result_out"]
+                comp_col, dl_col = st.columns([20, 1])
+                with comp_col:
+                    image_comparison(
+                        img1=preview,
+                        img2=img,
+                        label1="Input placement",
+                        label2=f"Result ({img.width}x{img.height})",
+                        starting_position=50,
+                        make_responsive=True,
+                    )
+                with dl_col:
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    st.download_button("↓", data=buf.getvalue(), file_name="outpainted.png", mime="image/png", key="dl_out", help="Download image")
         else:
             st.info("Upload an image to get started with outpainting.")
 
