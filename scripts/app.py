@@ -5,6 +5,7 @@ Run with:
     streamlit run scripts/app.py
 """
 
+import io
 import threading
 import tempfile
 from pathlib import Path
@@ -188,7 +189,7 @@ def main():
             import gc
             gc.collect()
             torch.cuda.empty_cache()
-            st.rerun()
+            st.success("GPU cache cleared. VRAM bar updates on next interaction.")
 
     # Load pipeline (cached per model). When switching models, acquire the GPU
     # lock first so we don't destroy the pipeline while another session is generating.
@@ -265,7 +266,14 @@ def main():
 
         # Persist result across reruns
         if "result_t2i" in st.session_state:
-            st.image(st.session_state["result_t2i"], caption="Generated Image", width="stretch")
+            img = st.session_state["result_t2i"]
+            img_col, dl_col = st.columns([20, 1])
+            with img_col:
+                st.image(img, caption=f"Generated Image ({img.width}x{img.height})", width="stretch")
+            with dl_col:
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                st.download_button("↓", data=buf.getvalue(), file_name="generated.png", mime="image/png", key="dl_t2i", help="Download image")
 
     # ── TAB 2: Inpainting ───────────────────────────────────────────────────
     with tab_inpaint:
@@ -381,7 +389,14 @@ def main():
                 with col_a:
                     st.image(input_img, caption="Original", width="stretch")
                 with col_b:
-                    st.image(st.session_state["result_inp"], caption="Result", width="stretch")
+                    img = st.session_state["result_inp"]
+                    img_col, dl_col = st.columns([20, 1])
+                    with img_col:
+                        st.image(img, caption=f"Result ({img.width}x{img.height})", width="stretch")
+                    with dl_col:
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG")
+                        st.download_button("↓", data=buf.getvalue(), file_name="inpainted.png", mime="image/png", key="dl_inp", help="Download image")
         else:
             st.info("Upload an image to get started with inpainting.")
 
@@ -536,7 +551,14 @@ def main():
                 with col_a:
                     st.image(preview, caption="Input placement", width="stretch")
                 with col_b:
-                    st.image(st.session_state["result_out"], caption="Outpainted result", width="stretch")
+                    img = st.session_state["result_out"]
+                    img_col, dl_col = st.columns([20, 1])
+                    with img_col:
+                        st.image(img, caption=f"Outpainted result ({img.width}x{img.height})", width="stretch")
+                    with dl_col:
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG")
+                        st.download_button("↓", data=buf.getvalue(), file_name="outpainted.png", mime="image/png", key="dl_out", help="Download image")
         else:
             st.info("Upload an image to get started with outpainting.")
 
