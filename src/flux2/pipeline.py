@@ -1,3 +1,4 @@
+import gc
 import random
 import sys
 import numpy as np
@@ -22,6 +23,15 @@ from flux2.sampling import (
 from flux2.util import FLUX2_MODEL_INFO, get_model_optimizations, load_ae, load_flow_model, load_text_encoder
 
 # from flux2.watermark import embed_watermark
+
+
+class GenerationOOMError(RuntimeError):
+    """Raised when a generation fails due to GPU out-of-memory.
+
+    The pipeline has already cleaned up intermediates and freed CUDA cache,
+    so the caller can safely retry with smaller settings.
+    """
+    pass
 
 def letterbox_to_multiple_of_x(img: Image.Image, x: int, color: str = "#000000") -> Image.Image:
     """
@@ -124,11 +134,16 @@ class Flux2Pipeline:
             self.warmup(height=256, width=256, num_steps=1)
 
     def warmup(self, height: int = 256, width: int = 256, num_steps: int = 1):
-        """Run a tiny dummy generation to trigger torch.compile tracing.
-        Call once after init so the user's first real generation is fast."""
+        """
+        Run a tiny dummy generation to trigger torch.compile tracing.
+        Call once after init so the user's first real generation is fast.
+        Note:No-op when compile_model is False (e.g. FP8 models).
+        """
+        if not self.compile_model:
+            return
         print(f"Warmup: running {num_steps}-step generation at {width}x{height} to trigger compilation...")
         with torch.inference_mode():
-            # Encode a short dummy prompt
+            #Encode a short dummy prompt
             if self.model_info["guidance_distilled"]:
                 ctx = self.text_encoder(["warmup"]).to(torch.bfloat16)
             else:
@@ -143,7 +158,7 @@ class Flux2Pipeline:
             x, x_ids = batched_prc_img(randn)
             timesteps = get_schedule(num_steps, x.shape[1])
 
-            # Run denoise (triggers flow model compilation on first call)
+            #Run denoise (triggers flow model compilation on first call)
             x = self._denoise(
                 x=x, x_ids=x_ids, ctx=ctx, ctx_ids=ctx_ids,
                 timesteps=timesteps, guidance=1.0,
@@ -151,13 +166,18 @@ class Flux2Pipeline:
                 inpaint_mask_seq=None, orig_img_seq=None, noise_seq=None,
             )
 
-            # Run AE decode (triggers decoder compilation on first call)
+            #Run AE decode (triggers decoder compilation on first call)
             self.ae.decode(x)
 
-            # Free intermediates
+            #Free intermediates
             del ctx, ctx_ids, randn, x, x_ids, timesteps
             torch.cuda.empty_cache()
         print("Warmup complete.")
+
+    def clear_cache(self):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def generate(
         self,
@@ -184,6 +204,51 @@ class Flux2Pipeline:
         fill_mode: Literal["color", "reflect", "edge", "blur"] = "reflect",
         fill_color: str = "#808080",    # Only used when fill_mode="color"
         ) -> Image.Image:
+
+        try:
+            return self._generate_inner(
+                prompt=prompt, height=height, width=width,
+                num_steps=num_steps, guidance=guidance, seed=seed,
+                cond_images=cond_images, match_image_size=match_image_size,
+                upsample_prompt_mode=upsample_prompt_mode,
+                input_image=input_image, inpainting_mask=inpainting_mask,
+                strength=strength, letterboxing=letterboxing,
+                letterboxing_color=letterboxing_color, i2i_mode=i2i_mode,
+                offset_x=offset_x, offset_y=offset_y,
+                fill_mode=fill_mode, fill_color=fill_color,
+            )
+        except torch.cuda.OutOfMemoryError:
+            #Clean up and give caller a chance to retry
+            self.clear_cache()
+            raise GenerationOOMError(
+                f"CUDA out of memory during generation at {width}x{height} "
+                f"({width * height:,} output pixels). "
+                f"Try reducing the output resolution or reference image sizes."
+            )
+
+    def _generate_inner(
+        self,
+        prompt: str,
+        height: int,
+        width: int,
+        num_steps: int,
+        guidance: float,
+        seed: int | None,
+        cond_images: List[Path] | None,
+        match_image_size: int | None,
+        upsample_prompt_mode: str,
+        input_image,
+        inpainting_mask,
+        strength: float,
+        letterboxing: bool,
+        letterboxing_color: str,
+        i2i_mode: str,
+        offset_x: int | None,
+        offset_y: int | None,
+        fill_mode: str,
+        fill_color: str,
+    ) -> Image.Image:
+        """Inner generation logic, separated so generate() can wrap it with OOM handling."""
 
         # Load explicit conditioning images first
         cond_images = cond_images or []

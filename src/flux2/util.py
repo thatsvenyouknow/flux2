@@ -44,8 +44,7 @@ FLUX2_MODEL_INFO = {
         "defaults": {"guidance": 1.0, "num_steps": 4},
         "fixed_params": {"guidance", "num_steps"},
         "guidance_distilled": True,
-        # compile_model=False: torch.compile/Triton can't handle FP8 dtypes on GPUs without native FP8 support
-        "optimizations": {"quantize_text_encoder": True, "compile_model": False, "cpu_offloading": False},
+        "optimizations": {"quantize_text_encoder": True, "compile_model": False, "cpu_offloading": False}, #compile=False bc RTX 3090 doesn't support FP8 computing
     },
     "flux.2-klein-base-4b": {
         "repo_id": "black-forest-labs/FLUX.2-klein-base-4B",
@@ -69,8 +68,7 @@ FLUX2_MODEL_INFO = {
         "defaults": {"guidance": 1.0, "num_steps": 4},
         "fixed_params": {"guidance", "num_steps"},
         "guidance_distilled": True,
-        # compile_model=False: torch.compile/Triton can't handle FP8 dtypes on GPUs without native FP8 support
-        "optimizations": {"quantize_text_encoder": True, "compile_model": False, "cpu_offloading": False},
+        "optimizations": {"quantize_text_encoder": True, "compile_model": False, "cpu_offloading": False}, #compile_model=False: RTX 3090 doesn't support FP8 computing
     },
     # "flux.2-klein-9b": {
     #     "repo_id": "black-forest-labs/FLUX.2-klein-9B",
