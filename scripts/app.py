@@ -28,35 +28,44 @@ def get_gpu_memory_info(device: int = 0) -> dict:
     Keys: total, allocated, reserved, free_in_reserved, free_total.
     - *free_total* = total - allocated  (usable after empty_cache)
     - *free_in_reserved* = reserved - allocated (usable right now without new alloc)
+    Returns zeros if CUDA is unavailable or the context is corrupted.
     """
     if not torch.cuda.is_available():
         return {"total": 0, "allocated": 0, "reserved": 0, "free_in_reserved": 0, "free_total": 0}
-    total = torch.cuda.get_device_properties(device).total_memory / 1024**2
-    allocated = torch.cuda.memory_allocated(device) / 1024**2
-    reserved = torch.cuda.memory_reserved(device) / 1024**2
-    return {
-        "total": round(total),
-        "allocated": round(allocated),
-        "reserved": round(reserved),
-        "free_in_reserved": round(reserved - allocated),
-        "free_total": round(total - allocated),
-    }
+    try:
+        total = torch.cuda.get_device_properties(device).total_memory / 1024**2
+        allocated = torch.cuda.memory_allocated(device) / 1024**2
+        reserved = torch.cuda.memory_reserved(device) / 1024**2
+        return {
+            "total": round(total),
+            "allocated": round(allocated),
+            "reserved": round(reserved),
+            "free_in_reserved": round(reserved - allocated),
+            "free_total": round(total - allocated),
+        }
+    except (torch.cuda.CudaError, RuntimeError):
+        return {"total": 0, "allocated": 0, "reserved": 0, "free_in_reserved": 0, "free_total": 0}
 
 # ── Pipeline (cached across reruns) ──────────────────────────────────────────
 
 
 @st.cache_resource
-def load_pipeline(model_name: str):
-    """Load pipeline for a model with its configured optimizations."""
+def load_pipeline(model_name: str, cpu_offloading: bool):
+    """Load pipeline for a model with its configured optimizations.
+
+    cpu_offloading is user-controlled; compile_model is derived from the
+    model defaults but forced False when cpu_offloading is True (incompatible).
+    """
     from flux2.pipeline import Flux2Pipeline
     from flux2.util import get_model_optimizations
 
     opts = get_model_optimizations(model_name)
+    compile_model = opts["compile_model"] and not cpu_offloading
     pipe = Flux2Pipeline(
         model_name,
-        cpu_offloading=opts["cpu_offloading"],
+        cpu_offloading=cpu_offloading,
         quantize_text_encoder=opts["quantize_text_encoder"],
-        compile_model=opts["compile_model"],
+        compile_model=compile_model,
     )
     pipe.warmup()
     return pipe
@@ -75,12 +84,12 @@ def get_gpu_lock():
 
 @st.cache_resource
 def get_loaded_model_tracker():
-    """Global tracker for which model is currently loaded.
+    """Global tracker for which model and settings are currently loaded.
 
     Unlike st.session_state this survives page refreshes and is shared across
     sessions, so we always know what load_pipeline has cached.
     """
-    return {"name": None}
+    return {"name": None, "cpu_offloading": None}
 
 
 # ── Temp-file helpers (pipeline expects paths) ──────────────────────────────
@@ -186,10 +195,18 @@ def main():
         st.divider()
         st.subheader("Optimizations")
         opts = _get_optimizations(model_name)
+        cpu_offloading = st.checkbox(
+            "CPU offloading",
+            value=opts["cpu_offloading"],
+            key=f"cpu_offload_{model_name}",
+            help="Offload model/text-encoder to CPU when not in use. Saves VRAM but slows generation.",
+        )
+        effective_compile = opts["compile_model"] and not cpu_offloading
         st.caption("Active for this model:")
         st.markdown(f"{'✅' if opts['quantize_text_encoder'] else '⬜'} INT8 text encoder")
-        st.markdown(f"{'✅' if opts['compile_model'] else '⬜'} torch.compile")
-        st.markdown(f"{'✅' if opts['cpu_offloading'] else '⬜'} CPU offloading")
+        st.markdown(f"{'✅' if effective_compile else '⬜'} torch.compile")
+        if opts["compile_model"] and cpu_offloading:
+            st.caption("⚠️ torch.compile disabled (incompatible with CPU offloading)")
 
         # ── GPU info ──────────────────────────────────────────────────────
         st.divider()
@@ -201,21 +218,46 @@ def main():
         if st.button("Clear GPU cache", key="clear_cache"):
             import gc
             gc.collect()
-            torch.cuda.empty_cache()
-            st.success("GPU cache cleared. VRAM bar updates on next interaction.")
+            try:
+                torch.cuda.empty_cache()
+                st.success("GPU cache cleared. VRAM bar updates on next interaction.")
+            except (torch.cuda.CudaError, RuntimeError):
+                st.error("CUDA context is corrupted. Please restart the app.")
 
-    # Load pipeline (cached per model). When switching models, acquire the GPU
-    # lock first so we don't destroy the pipeline while another session is generating.
-    # Uses a global tracker (not session_state) so page refreshes don't lose track
-    # of what's loaded — preventing double-load OOM.
+    # Load pipeline (cached per model + offloading setting). When switching
+    # models or toggling CPU offloading, acquire the GPU lock first so we don't
+    # destroy the pipeline while another session is generating.
+    # Uses a global tracker (not session_state) so page refreshes don't lose
+    # track of what's loaded — preventing double-load OOM.
     gpu_lock = get_gpu_lock()
     loaded_model = get_loaded_model_tracker()
-    if loaded_model["name"] is not None and loaded_model["name"] != model_name:
+    needs_reload = (
+        loaded_model["name"] is not None
+        and (loaded_model["name"] != model_name or loaded_model["cpu_offloading"] != cpu_offloading)
+    )
+    if needs_reload:
         with gpu_lock:
             load_pipeline.clear()
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except (torch.cuda.CudaError, RuntimeError):
+                st.error(
+                    "**Fatal CUDA error** — the GPU is in an unrecoverable state. "
+                    "Please restart the app."
+                )
+                st.stop()
     loaded_model["name"] = model_name
-    pipeline = load_pipeline(model_name)
+    loaded_model["cpu_offloading"] = cpu_offloading
+    try:
+        pipeline = load_pipeline(model_name, cpu_offloading)
+    except (torch.cuda.CudaError, RuntimeError) as e:
+        if "CUDA" in str(e) or "illegal memory access" in str(e):
+            st.error(
+                "**Fatal CUDA error** — the GPU is in an unrecoverable state. "
+                "Please restart the app."
+            )
+            st.stop()
+        raise
 
     # ── Update VRAM bar (reflects model weights, not generation) ──────────
     mem = get_gpu_memory_info()
@@ -509,7 +551,7 @@ def main():
             if fill_mode == "Solid Color":
                 fill_color = st.color_picker("Fill color", value=fill_color, key="out_fill")
 
-            strength_out = st.slider("Strength", 0.5, 1.0, 1.0, 0.05, key="out_strength")
+            strength_out = st.slider("Strength", 0.5, 1.0, 0.85, 0.05, key="out_strength")
 
             # Reference images (optional)
             cond_uploads_out = st.file_uploader(

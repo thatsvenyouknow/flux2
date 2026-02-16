@@ -177,7 +177,10 @@ class Flux2Pipeline:
     def clear_cache(self):
         gc.collect()
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except (torch.cuda.CudaError, RuntimeError):
+                pass
 
     def generate(
         self,
