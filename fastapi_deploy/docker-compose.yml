@@ -1,0 +1,33 @@
+services:
+  flux2-api:
+    build:
+      context: ..
+      dockerfile: fastapi_deploy/Dockerfile
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ${MODEL_PATH:-/data/image_models}:/data/image_models:ro
+    ports:
+      - "8080:8000"
+    restart: unless-stopped
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

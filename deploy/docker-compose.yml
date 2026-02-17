@@ -1,0 +1,35 @@
+services:
+  flux2-app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ${MODEL_PATH:-/data/image_models}:/data/image_models:ro
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in .env}
+    networks:
+      - internal
+    restart: unless-stopped
+    depends_on:
+      - flux2-app
+
+networks:
+  internal:

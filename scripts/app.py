@@ -8,6 +8,7 @@ Dependencies: pip install -r scripts/requirements-app.txt
 """
 
 import io
+import os
 import threading
 import tempfile
 from pathlib import Path
@@ -143,6 +144,20 @@ def _handle_generation_error(e: Exception):
         st.error(f"Generation failed: {e}")
 
 
+def _fatal_cuda_error():
+    """Display a fatal CUDA error with a restart button.
+
+    When running inside Docker with ``restart: unless-stopped``, killing the
+    process causes Docker to bring it back automatically.
+    """
+    st.error(
+        "**Fatal CUDA error** — the GPU is in an unrecoverable state."
+    )
+    if st.button("🔄 Restart app", type="primary"):
+        os._exit(1)
+    st.stop()
+
+
 # ── App ──────────────────────────────────────────────────────────────────────
 
 
@@ -222,7 +237,7 @@ def main():
                 torch.cuda.empty_cache()
                 st.success("GPU cache cleared. VRAM bar updates on next interaction.")
             except (torch.cuda.CudaError, RuntimeError):
-                st.error("CUDA context is corrupted. Please restart the app.")
+                _fatal_cuda_error()
 
     # Load pipeline (cached per model + offloading setting). When switching
     # models or toggling CPU offloading, acquire the GPU lock first so we don't
@@ -241,22 +256,14 @@ def main():
             try:
                 torch.cuda.empty_cache()
             except (torch.cuda.CudaError, RuntimeError):
-                st.error(
-                    "**Fatal CUDA error** — the GPU is in an unrecoverable state. "
-                    "Please restart the app."
-                )
-                st.stop()
+                _fatal_cuda_error()
     loaded_model["name"] = model_name
     loaded_model["cpu_offloading"] = cpu_offloading
     try:
         pipeline = load_pipeline(model_name, cpu_offloading)
     except (torch.cuda.CudaError, RuntimeError) as e:
         if "CUDA" in str(e) or "illegal memory access" in str(e):
-            st.error(
-                "**Fatal CUDA error** — the GPU is in an unrecoverable state. "
-                "Please restart the app."
-            )
-            st.stop()
+            _fatal_cuda_error()
         raise
 
     # ── Update VRAM bar (reflects model weights, not generation) ──────────
@@ -347,10 +354,23 @@ def main():
             "Upload input image", type=["png", "jpg", "jpeg"], key=f"inp_upload_{inp_upload_key}"
         )
 
-        # Input can be from upload or from "Use as input" (previous result)
+        # Input can be from upload or from "Use as input" (previous result).
+        # Only re-read the file when the upload actually changes (avoids
+        # stream-consumption issues on reruns) and bump the canvas key so
+        # st_canvas picks up the new background image.
         if uploaded_file is not None:
-            input_img = Image.open(uploaded_file).convert("RGB")
-            st.session_state["inpaint_input"] = input_img
+            file_id = (uploaded_file.name, uploaded_file.size)
+            prev_file_id = st.session_state.get("_inpaint_file_id")
+            if file_id != prev_file_id:
+                uploaded_file.seek(0)
+                input_img = Image.open(uploaded_file).convert("RGB")
+                st.session_state["inpaint_input"] = input_img
+                st.session_state["_inpaint_file_id"] = file_id
+                st.session_state["inpaint_canvas_key"] = (
+                    st.session_state.get("inpaint_canvas_key", 0) + 1
+                )
+            else:
+                input_img = st.session_state["inpaint_input"]
         elif "inpaint_input" in st.session_state:
             input_img = st.session_state["inpaint_input"]
         else:
@@ -363,8 +383,8 @@ def main():
             # Canvas controls
             brush_size = st.slider("Brush size", min_value=5, max_value=100, value=30, key="brush")
 
-            # Scale image to fit canvas display
-            MAX_CANVAS_W = 700
+            # Scale image to fit canvas display (fixed width works on both desktop & mobile)
+            MAX_CANVAS_W = 300
             scale = min(MAX_CANVAS_W / orig_w, 1.0)
             canvas_w = int(orig_w * scale)
             canvas_h = int(orig_h * scale)
@@ -491,7 +511,15 @@ def main():
         )
 
         if uploaded_out is not None:
-            input_img_out = Image.open(uploaded_out).convert("RGB")
+            file_id_out = (uploaded_out.name, uploaded_out.size)
+            prev_file_id_out = st.session_state.get("_outpaint_file_id")
+            if file_id_out != prev_file_id_out:
+                uploaded_out.seek(0)
+                input_img_out = Image.open(uploaded_out).convert("RGB")
+                st.session_state["outpaint_input"] = input_img_out
+                st.session_state["_outpaint_file_id"] = file_id_out
+            else:
+                input_img_out = st.session_state["outpaint_input"]
             orig_w, orig_h = input_img_out.size
             st.caption(f"Original size: {orig_w} x {orig_h}")
 
