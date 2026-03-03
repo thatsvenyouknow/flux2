@@ -13,13 +13,18 @@ from .model import FP8Linear, Flux2, Flux2Params, Klein4BParams, Klein9BParams
 from .text_encoder import load_mistral_small_embedder, load_qwen3_embedder
 
 import os
+
+# Default base path for locally downloaded Klein 9B (flow, AE, text_encoder, tokenizer).
+KLEIN_9B_BASE = "/home/ubuntu/data/models/FLUX.2-klein-9B"
+
 env_vars = os.environ
 os.environ["AE_MODEL_PATH"] = env_vars.get("AE_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B/ae.safetensors")
 os.environ["KLEIN_4B_MODEL_PATH"] = env_vars.get("KLEIN_4B_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B/flux-2-klein-4b.safetensors")
 os.environ["KLEIN_4B_FP8_MODEL_PATH"] = env_vars.get("KLEIN_4B_FP8_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B/flux-2-klein-4b-fp8.safetensors")
 os.environ["KLEIN_4B_BASE_MODEL_PATH"] = env_vars.get("KLEIN_4B_BASE_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B/flux-2-klein-base-4b.safetensors")
-os.environ["KLEIN_9B_MODEL_PATH"] = env_vars.get("KLEIN_9B_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-9B/flux-2-klein-9b.safetensors")
-os.environ["KLEIN_9B_FP8_MODEL_PATH"] = env_vars.get("KLEIN_9B_FP8_MODEL_PATH", "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-9B/flux-2-klein-9b-fp8.safetensors")
+os.environ["KLEIN_9B_MODEL_PATH"] = env_vars.get("KLEIN_9B_MODEL_PATH", f"{KLEIN_9B_BASE}/flux-2-klein-9b.safetensors")
+os.environ["KLEIN_9B_FP8_MODEL_PATH"] = env_vars.get("KLEIN_9B_FP8_MODEL_PATH", f"{KLEIN_9B_BASE}/flux-2-klein-9b-fp8.safetensors")
+os.environ["FLUX2_KLEIN_9B_REPO"] = env_vars.get("FLUX2_KLEIN_9B_REPO", KLEIN_9B_BASE)
 
 FLUX2_MODEL_INFO = {
     "flux.2-klein-4b": {
@@ -70,18 +75,18 @@ FLUX2_MODEL_INFO = {
         "guidance_distilled": True,
         "optimizations": {"quantize_text_encoder": True, "compile_model": False, "cpu_offloading": False}, #compile_model=False: RTX 3090 doesn't support FP8 computing
     },
-    # "flux.2-klein-9b": {
-    #     "repo_id": "black-forest-labs/FLUX.2-klein-9B",
-    #     "filename": "flux-2-klein-9b.safetensors",
-    #     "filename_ae": "ae.safetensors",
-    #     "params": Klein9BParams(),
-    #     "text_encoder_load_fn": lambda device="cuda", load_in_8bit=False: load_qwen3_embedder(variant="8B", device=device, load_in_8bit=load_in_8bit),
-    #     "model_path": "KLEIN_9B_MODEL_PATH",
-    #     "defaults": {"guidance": 1.0, "num_steps": 4},
-    #     "fixed_params": {"guidance", "num_steps"},
-    #     "guidance_distilled": True,
-    #     "optimizations": {"quantize_text_encoder": True, "compile_model": False, "cpu_offloading": True},
-    # },
+    "flux.2-klein-9b": {
+        "repo_id": "black-forest-labs/FLUX.2-klein-9B",
+        "filename": "flux-2-klein-9b.safetensors",
+        "filename_ae": "ae.safetensors",
+        "params": Klein9BParams(),
+        "text_encoder_load_fn": lambda device="cuda", load_in_8bit=False: load_qwen3_embedder(variant="8B", device=device, load_in_8bit=load_in_8bit),
+        "model_path": "KLEIN_9B_MODEL_PATH",
+        "defaults": {"guidance": 1.0, "num_steps": 4},
+        "fixed_params": {"guidance", "num_steps"},
+        "guidance_distilled": True,
+        "optimizations": {"quantize_text_encoder": True, "compile_model": True, "cpu_offloading": False},
+    },
     # "flux.2-klein-base-9b": {
     #     "repo_id": "black-forest-labs/FLUX.2-klein-base-9B",
     #     "filename": "flux-2-klein-base-9b.safetensors",
@@ -122,10 +127,8 @@ def load_flow_model(model_name: str, debug_mode: bool = False, device: str | tor
         config["params"].depth = 1
         config["params"].depth_single_blocks = 1
     else:
-        if config["model_path"] in os.environ:
-            weight_path = os.environ[config["model_path"]]
-            assert os.path.exists(weight_path), f"Provided weight path {weight_path} does not exist"
-        else:
+        weight_path = os.environ.get(config["model_path"], "")
+        if not weight_path or not os.path.exists(weight_path):
             # download from huggingface
             try:
                 weight_path = huggingface_hub.hf_hub_download(
@@ -183,24 +186,36 @@ def load_text_encoder(model_name: str, device: str | torch.device = "cuda", load
 def load_ae(model_name: str, device: str | torch.device = "cuda") -> AutoEncoder:
     config = FLUX2_MODEL_INFO[model_name.lower()]
 
-    if "AE_MODEL_PATH" in os.environ:
-        weight_path = os.environ["AE_MODEL_PATH"]
-        assert os.path.exists(weight_path), f"Provided weight path {weight_path} does not exist"
+    # Prefer AE next to the flow weights (e.g. .../FLUX.2-klein-9B/ae.safetensors)
+    flow_path = os.environ.get(config["model_path"], "")
+    if flow_path and os.path.exists(flow_path):
+        weight_path = os.path.join(os.path.dirname(flow_path), config["filename_ae"])
     else:
-        # download from huggingface
+        weight_path = ""
+    if not weight_path or not os.path.exists(weight_path):
+        weight_path = os.environ.get("AE_MODEL_PATH", "")
+    if not weight_path or not os.path.exists(weight_path):
+        # Download from Hugging Face. AE is in FLUX.2-dev; Klein repos may not include it.
+        AE_FALLBACK_REPO = "black-forest-labs/FLUX.2-dev"
         try:
             weight_path = huggingface_hub.hf_hub_download(
                 repo_id=config["repo_id"],
                 filename=config["filename_ae"],
                 repo_type="model",
             )
-        except huggingface_hub.errors.RepositoryNotFoundError:
-            print(
-                f"Failed to access the model repository. Please check your internet "
-                f"connection and make sure you've access to {config['repo_id']}."
-                "Stopping."
-            )
-            sys.exit(1)
+        except Exception:
+            try:
+                weight_path = huggingface_hub.hf_hub_download(
+                    repo_id=AE_FALLBACK_REPO,
+                    filename=config["filename_ae"],
+                    repo_type="model",
+                )
+            except Exception as e:
+                print(
+                    f"Failed to load AE: not found in {config['repo_id']} or {AE_FALLBACK_REPO}. "
+                    f"Set AE_MODEL_PATH to a local ae.safetensors path. Error: {e}"
+                )
+                sys.exit(1)
 
     if isinstance(device, str):
         device = torch.device(device)

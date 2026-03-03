@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import torch
+import huggingface_hub
 import torch.nn as nn
 from einops import rearrange
 from PIL import Image
@@ -388,12 +389,23 @@ class Qwen3Embedder(nn.Module):
                 llm_int8_threshold=6.0,
             )
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            text_encoder,
-            torch_dtype=None if load_in_8bit else torch.bfloat16,
-            device_map=str(device),
-            quantization_config=quantization_config,
-        )
+        if load_in_8bit:
+            # bitsandbytes requires device_map for quantized loading
+            self.model = AutoModelForCausalLM.from_pretrained(
+                text_encoder,
+                torch_dtype=None,
+                device_map=str(device),
+                quantization_config=quantization_config,
+                low_cpu_mem_usage=True,
+            )
+        else:
+            # Load without device_map so the model can be moved freely with .cpu()/.to()
+            # (device_map pins parameters via accelerate hooks, preventing cpu_offloading)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                text_encoder,
+                torch_dtype=torch.bfloat16,
+                low_cpu_mem_usage=True,
+            ).to(device)
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer)
         self.max_length = MAX_LENGTH
@@ -450,12 +462,29 @@ def load_mistral_small_embedder(device: str | torch.device = "cuda", **kwargs) -
     return Mistral3SmallEmbedder().to(device)
 
 
-def load_qwen3_embedder(variant: str, device: str | torch.device = "cuda", load_in_8bit: bool = False):
+# Default local path for Klein 9B (text_encoder + tokenizer live here).
+KLEIN_9B_DEFAULT_PATH = "/home/ubuntu/data/models/FLUX.2-klein-9B"
+
+
+def _resolve_klein_repo(variant: str) -> str:
+    """Resolve path to Klein repo root (for text_encoder/tokenizer). Uses env var or HF cache."""
     if variant == "4B":
-        model_spec = "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-4B"
+        env_var = "FLUX2_KLEIN_4B_REPO"
+        repo_id = "black-forest-labs/FLUX.2-klein-4B"
+        default_path = ""
     elif variant == "8B":
-        model_spec = "/data/image_models/models/diffusers/models--black-forest-labs--FLUX.2-klein-9B"
+        env_var = "FLUX2_KLEIN_9B_REPO"
+        repo_id = "black-forest-labs/FLUX.2-klein-9B"
+        default_path = KLEIN_9B_DEFAULT_PATH
     else:
         raise ValueError(f"Invalid variant: {variant}")
 
-    return Qwen3Embedder(model_spec=model_spec,device=device,load_in_8bit=load_in_8bit)
+    path = os.environ.get(env_var, default_path)
+    if path and os.path.exists(path):
+        return path
+    return huggingface_hub.snapshot_download(repo_id=repo_id, repo_type="model")
+
+
+def load_qwen3_embedder(variant: str, device: str | torch.device = "cuda", load_in_8bit: bool = False):
+    model_spec = _resolve_klein_repo(variant)
+    return Qwen3Embedder(model_spec=model_spec, device=device, load_in_8bit=load_in_8bit)

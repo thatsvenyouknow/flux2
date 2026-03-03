@@ -131,7 +131,15 @@ export KLEIN_9B_MODEL_PATH="<klein_9b_path>"
 export KLEIN_9B_BASE_MODEL_PATH="<klein_9b_base_path>"
 ```
 
-If you don't set the environment variables, the weights will be downloaded automatically.
+If you don't set the environment variables, the weights will be downloaded automatically from Hugging Face when you first use a model.
+
+To download the Klein 9B model to a local directory and get the env vars for the pipeline:
+
+```bash
+python scripts/download_klein_9b.py --dir ./models/FLUX.2-klein-9B
+# Then set the printed KLEIN_9B_MODEL_PATH, FLUX2_KLEIN_9B_REPO, and AE_MODEL_PATH.
+# Run retouching with: --flux-model flux.2-klein-9b
+```
 
 You can start an interactive session to do both text to image generation as well as editing (one or multiple) images with the following command:
 

@@ -13,7 +13,7 @@ dependencies = [
   "torch==2.8.0",
   "torchvision==0.23.0",
   "einops==0.8.1",
-  "transformers==4.56.1",
+  "transformers>=4.56.1",
   "safetensors==0.4.5",
   "fire==0.7.1",
   "openai==2.8.1",
@@ -23,6 +23,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "ruff==0.6.8",
+]
+bertelsman = [
+  "google-genai",
+  "pyyaml",
+  "python-dotenv",
+  "transformers>=4.57",
+  "bitsandbytes>=0.46.1",
 ]
 
 [build-system]
