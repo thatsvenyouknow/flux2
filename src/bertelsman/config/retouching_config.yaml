@@ -19,7 +19,8 @@ system_prompt: |
 
   • SAFETY DEVICES: Smoke detectors on ceilings, surveillance cameras, security cameras, motion sensors, alarm panels
 
-  • INFRASTRUCTURE: Power lines, telephone poles, electrical cables, visible wiring, pool jets/water outlets, drain covers, utility boxes
+  • INFRASTRUCTURE: Power lines, electrical cables, visible wiring, pool jets/water outlets, drain covers, utility boxes
+    ⚠️ NOTE: "telephone poles" / "electrical poles" carrying visible cables/wires → REMOVE. But decorative poles, flagpoles, pergola posts, fence posts, railing posts, and any pole that is part of the property's structure → DO NOT REMOVE (see list below).
 
   • STRUCTURAL DAMAGE: Cracks in walls, cracked tiles, broken fixtures, chipped countertops, defective objects
 
@@ -30,6 +31,7 @@ system_prompt: |
   • TRASH & CLUTTER: Trash bins in view, overflowing ashtrays, crumbs on floor
 
   • DISTRACTING DIRT & DAMAGE: Heavy dirt, rust, stubborn stains, discoloration/Verfärbungen, heavy scuff marks, chipped paint, peeling surfaces, debris on floors or surfaces — anything visually distracting that does not belong
+    ⚠️ NOTE: Cosmetic damage ON structural fixtures (rust on a railing, fraying on a rope, peeling paint on a post) should be categorized as RETOUCH, not REMOVE — we fix the surface, we do NOT remove the fixture itself.
 
   • WATER STAINS & DEPOSITS: Water marks, mineral deposits, limescale on glass/fixtures, water spots on surfaces — should be removed cleanly
     ⚠️ EXCEPTION: Wet footprints on floors/around pools are "Human Footprints" — these STAY, do not flag them
@@ -38,8 +40,10 @@ system_prompt: |
   ⚠️ DO NOT REMOVE — These belong in the scene:
   ══════════════════════════════════════════════
 
-  The following are NORMAL parts of hotel/resort photography and must NEVER be flagged or removed:
-  • Boats, sailboats, yachts, jet skis, kayaks on water or at docks
+  The following are NORMAL parts of hotel/resort photography and must NEVER be flagged for REMOVAL.
+  If they have cosmetic issues (rust, fraying, dirt), flag them as RETOUCH instead.
+
+  • Boats, sailboats, yachts, jet skis, kayaks on water or at docks — including cargo ships on the horizon
   • Sun loungers, beach umbrellas, parasols (even if branded — remove only the logo text, keep the object)
   • Pool floats, pool noodles, towels on loungers
   • Decorative items: artwork, vases, lamps, candles, flower arrangements, cushions, rugs
@@ -52,6 +56,10 @@ system_prompt: |
   • Food and drinks on tables (remove only brand labels, not the items themselves)
   • Hotel amenities: towel racks, coat hangers, minibars, coffee machines, TV sets
   • Power outlets, light switches, standard electrical fittings — these are normal room infrastructure
+  • PERSONAL BELONGINGS & STAGED ITEMS: Clothing (shirts, dresses, robes) laid on beds or chairs, handbags, shoes, toiletries, phones, books, sunglasses, hats — these are part of the hotel room staging and must NEVER be removed. Only remove visible brand logos/text ON these items, not the items themselves.
+  • "Clutter" on surfaces: Items deliberately placed on dressers, nightstands, tables (toiletries, bottles, brushes, keys, remote controls) are normal hotel staging — do NOT flag them as clutter to remove.
+  • STRUCTURAL / SCENE FIXTURES: Poles, posts, masts, railings, fences, gates, ropes, chains, wooden posts, metal frames, pergola beams — these are permanent parts of the property and must NEVER be removed. If they have cosmetic damage (rust, fraying, peeling), classify as RETOUCH.
+  • FLAGS & BANNERS: Flags, pennants, banners, bunting on poles or ropes — these are decorative or functional and must NOT be removed. They are NOT "safety signs".
 
   If in doubt whether something is "clutter" or "part of the scene", err on the side of KEEPING it.
 
@@ -71,6 +79,8 @@ system_prompt: |
 
   • SKIN RETOUCHING (if people are visible): Visible scratches or cuts, bandages, noticeable pimples/blemishes, unkempt or damaged nails, strong tan lines, visible sunburn, pronounced cellulite — skin and nails should look healthy and natural (not over-retouched)
 
+  • FIXTURE COSMETICS: Rust, peeling paint, frayed rope/fabric, discoloration, or other cosmetic blemishes on permanent structural elements (poles, posts, railings, fences, ropes, chains, wooden beams). The fixture stays — only the blemish gets retouched.
+
   • WINDOW VIEWS: If a window shows a clearly unfinished, ugly, or construction-filled view, note this as needing post-production replacement
 
   ══════════════════════════════════════════════
@@ -83,9 +93,9 @@ system_prompt: |
     "tui_logos_present": ["List any TUI logos found — e.g., 'TUI BLUE logo on chef apron', 'TUI BLUE sign at reception'. Empty list if none."],
     "issues": [
       {
-        "category": "logo_brand | equipment_clutter | safety_devices | infrastructure | stickers | reflections | construction | damage_dirt | water_stains | linen_textile | surface_clean | vegetation | skin_retouch | wood_repair",
+        "category": "logo_brand | equipment_clutter | safety_devices | infrastructure | stickers | reflections | construction | damage_dirt | water_stains | linen_textile | surface_clean | vegetation | skin_retouch | wood_repair | fixture_cosmetics",
         "description": "Specific description of the issue — e.g., 'Seif Beach Club logo printed on striped tote bag'",
-        "sam_label": "Short object noun for segmentation model (1-3 words, the OBJECT only, no adjectives or conditions). Examples: 'logo', 'fire extinguisher', 'smoke detector', 'surveillance camera', 'power line', 'rust spot', 'crack'. For surface/texture issues (grout, sand, grass, bedding) use the surface itself: 'grout', 'sand', 'grass', 'bedding'. NEVER use full sentences or adjectives like 'dirty' or 'wrinkled'.",
+        "sam_label": "Visually descriptive phrase for the segmentation model (2-6 words). Include color, shape, or material when it helps distinguish the object. Examples: 'green circular sticker on glass', 'logo on striped tote bag', 'blue construction crane', 'grey floodlight on roof', 'smoke detector on ceiling', 'rust spot on railing', 'white surveillance camera'. For surface/texture issues use: 'dirty grout lines', 'sandy footprints', 'brown dead grass', 'wrinkled bedcover'. Do NOT write full sentences.",
         "location": "Precise location — e.g., 'right side, on the chair next to the balcony door'",
         "severity": "minor | moderate | major",
         "confidence": 85

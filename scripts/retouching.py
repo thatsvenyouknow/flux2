@@ -64,12 +64,12 @@ def main():
     parser.add_argument("--max-side", type=int, default=2048,
                         help="Max image dimension — large images are downscaled at the start (default: 2048).")
 
-    parser.add_argument("--two-pass", action="store_true", default=True,
-                        help="Two-pass mode: remove then retouch (default: on).")
+    parser.add_argument("--two-pass", action="store_true", default=False,
+                        help="Two-pass mode: remove then retouch (currently disabled; remove-only).")
     parser.add_argument("--single-pass", action="store_true",
-                        help="Single-pass mode with combined mask.")
-    parser.add_argument("--remove-strength", type=float, default=0.85,
-                        help="Inpainting strength for remove pass.")
+                        help="Single-pass mode with combined mask (default behaviour).")
+    parser.add_argument("--remove-strength", type=float, default=1.0,
+                        help="Inpainting strength for remove pass (1.0 = full removal).")
     parser.add_argument("--retouch-strength", type=float, default=0.55,
                         help="Inpainting strength for retouch pass.")
     parser.add_argument("--num-steps", type=int, default=4,

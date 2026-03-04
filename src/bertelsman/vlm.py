@@ -59,6 +59,7 @@ RETOUCH_CATEGORIES = frozenset({
     "vegetation",
     "skin_retouch",
     "wood_repair",
+    "fixture_cosmetics",
 })
 
 
@@ -121,6 +122,30 @@ class VLMAnalysis:
     def retouch_descriptions(self) -> list[str]:
         """Full descriptions for retouch issues (for logging / debug)."""
         return [i.description for i in self.retouch_issues]
+
+    @property
+    def remove_only_edit_prompt(self) -> str:
+        """Build an edit prompt containing only removal actions.
+
+        Strips retouch / smoothing / recolor sentences from the VLM's
+        full edit_prompt so that Flux2 only sees removal instructions.
+        Falls back to the full prompt if filtering removes everything.
+        """
+        if not self.edit_prompt:
+            return ""
+        remove_verbs = {"remove", "delete", "erase", "replace"}
+        preserve_verbs = {"maintain", "preserve", "keep"}
+        sentences = [s.strip() for s in self.edit_prompt.replace(". ", ".\n").split("\n") if s.strip()]
+        kept: list[str] = []
+        for sent in sentences:
+            first_word = sent.split()[0].lower().rstrip(",.:;") if sent.split() else ""
+            if first_word in remove_verbs or first_word in preserve_verbs:
+                kept.append(sent)
+        if not kept:
+            return self.edit_prompt
+        if not any(s.split()[0].lower().rstrip(",.:;") in preserve_verbs for s in kept):
+            kept.append("Maintain all other aspects of the original image.")
+        return " ".join(s if s.endswith(".") else s + "." for s in kept)
 
 
 # ---------------------------------------------------------------------------

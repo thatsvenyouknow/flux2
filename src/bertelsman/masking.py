@@ -132,6 +132,30 @@ SAM_BLOCKLIST = [
     "person",
     "guest",
     "staff",
+    # Personal belongings & staged items — remove logos, not the objects
+    "shirt",
+    "dress",
+    "robe",
+    "clothing",
+    "shoe",
+    "handbag",
+    "phone",
+    "sunglasses",
+    "hat",
+    "brush",
+    "remote",
+    "clutter",
+    # Scene fixtures
+    "pole",
+    "post",
+    "railing",
+    "fence",
+    "rope",
+    "chain",
+    "flag",
+    "banner",
+    "cargo ship",
+    "ship on horizon",
 ]
 
 
@@ -180,6 +204,66 @@ def _filter_blocklist(prompts: list[str], blocklist: list[str] = SAM_BLOCKLIST) 
     if blocked:
         print(f"  SAM blocklist filtered {len(blocked)} prompt(s): {blocked}")
     return filtered
+
+
+# Prepositions / filler words stripped when extracting a short core noun.
+_STRIP_WORDS = {"on", "in", "at", "the", "a", "an", "of", "from", "with", "near", "next", "to", "by"}
+
+
+def _expand_prompts(prompts: list[str]) -> list[str]:
+    """Expand each prompt into SAM variants to improve recall without over-masking.
+
+    For "green circular sticker on glass door" we generate:
+      1. "green circular sticker on glass door"  (original — most specific)
+      2. "circular sticker on glass door"         (strip one leading adjective)
+      3. "sticker on glass door"                  (strip more leading adjectives)
+      4. "green circular sticker"                 (drop location phrase)
+      5. "sticker"                                (core noun only)
+
+    We NEVER generate prompts for the container ("glass door", "door") because
+    that causes SAM to mask the background object instead of the target.
+    """
+    seen: set[str] = set()
+    expanded: list[str] = []
+
+    def _add(p: str) -> None:
+        key = p.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            expanded.append(p.strip())
+
+    for prompt in prompts:
+        _add(prompt)
+
+        words = prompt.split()
+        if len(words) <= 2:
+            continue
+
+        # Find where the location phrase starts (first preposition).
+        prep_idx = None
+        for i, w in enumerate(words):
+            if w.lower() in _STRIP_WORDS and i > 0:
+                prep_idx = i
+                break
+
+        # Object phrase = everything before the preposition (or the full prompt).
+        obj_words = words[:prep_idx] if prep_idx is not None else list(words)
+
+        # Strip leading adjectives from the full prompt (keep location).
+        # "green circular sticker on glass door" → "circular sticker on glass door" → "sticker on glass door"
+        for i in range(1, len(obj_words)):
+            _add(" ".join(words[i:]))
+
+        # Strip trailing location phrase to get just the object.
+        # "green circular sticker on glass door" → "green circular sticker"
+        if prep_idx is not None:
+            obj_phrase = " ".join(obj_words)
+            _add(obj_phrase)
+            # Also strip leading adjectives from the object phrase.
+            for i in range(1, len(obj_words)):
+                _add(" ".join(obj_words[i:]))
+
+    return expanded
 
 
 def _dilate_mask(mask: np.ndarray, dilation_px: int) -> np.ndarray:
@@ -350,6 +434,11 @@ def generate_masks(
     remove_prompts = _filter_blocklist(remove_prompts)
     retouch_prompts = _filter_blocklist(retouch_prompts)
 
+    # Expand each prompt into variants (e.g. "green sticker on glass" → also "sticker")
+    # so SAM has multiple chances to find the object.
+    remove_prompts = _expand_prompts(remove_prompts)
+    retouch_prompts = _expand_prompts(retouch_prompts)
+
     from PIL import Image as PILImage
     img = PILImage.open(image_path).convert("RGB")
     h, w = img.height, img.width
@@ -372,14 +461,14 @@ def generate_masks(
     retouch_masks: list[SegmentMask] = []
 
     if remove_prompts:
-        print(f"  SAM remove ({len(remove_prompts)} prompts, threshold={remove_threshold})...")
+        print(f"  SAM remove ({len(remove_prompts)} prompts, threshold={remove_threshold}): {remove_prompts}")
         remove_masks = session.extract_masks(
             image_path, remove_prompts,
             threshold=remove_threshold, mask_threshold=remove_threshold,
         )
 
     if retouch_prompts:
-        print(f"  SAM retouch ({len(retouch_prompts)} prompts, threshold={retouch_threshold})...")
+        print(f"  SAM retouch ({len(retouch_prompts)} prompts, threshold={retouch_threshold}): {retouch_prompts}")
         retouch_masks = session.extract_masks(
             image_path, retouch_prompts,
             threshold=retouch_threshold, mask_threshold=retouch_threshold,

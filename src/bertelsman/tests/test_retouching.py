@@ -323,8 +323,8 @@ def test_pipeline(
     vlm_model: str = "gemini-2.5-pro",
     sam_model: str = "facebook/sam3",
     skip_vlm: bool = False,
-    two_pass: bool = True,
-    remove_strength: float = 0.7,
+    two_pass: bool = False,
+    remove_strength: float = 1.0,
     retouch_strength: float = 0.55,
     num_steps: int = 4,
     guidance: float = 4.0,
@@ -397,10 +397,7 @@ def test_pipeline(
 
             sam_labels: list[str] = []
             if result.analysis:
-                sam_labels = (
-                    result.analysis.remove_sam_prompts
-                    + result.analysis.retouch_sam_prompts
-                )
+                sam_labels = result.analysis.remove_sam_prompts
 
             rows.append({
                 "original": original,
@@ -466,8 +463,8 @@ def main() -> None:
                         help="[pipeline] Skip VLM, use default SAM prompts + generic prompt.")
     parser.add_argument("--single-pass", action="store_true",
                         help="[pipeline] Single inpainting pass instead of two-pass.")
-    parser.add_argument("--remove-strength", type=float, default=0.7,
-                        help="[pipeline] Inpainting strength for remove pass.")
+    parser.add_argument("--remove-strength", type=float, default=1.0,
+                        help="[pipeline] Inpainting strength for remove pass (1.0 = full removal).")
     parser.add_argument("--retouch-strength", type=float, default=0.55,
                         help="[pipeline] Inpainting strength for retouch pass.")
     parser.add_argument("--num-steps", type=int, default=4,

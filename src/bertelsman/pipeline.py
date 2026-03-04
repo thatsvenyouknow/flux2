@@ -95,8 +95,8 @@ class TUIRetouchingPipeline:
         sam_remove_threshold: float = 0.35,
         sam_retouch_threshold: float = 0.65,
         # Inpainting
-        two_pass: bool = True,
-        remove_strength: float = 0.85,
+        two_pass: bool = False,
+        remove_strength: float = 1.0,
         retouch_strength: float = 0.55,
         num_steps: int = 4,
         guidance: float = 4.0,
@@ -160,8 +160,13 @@ class TUIRetouchingPipeline:
         else:
             print("[1/3] Skipping VLM analysis.")
 
-        # Resolve edit prompt
-        edit_prompt = manual_prompt or (analysis.edit_prompt if analysis else "")
+        # Resolve edit prompt — use remove-only variant when retouch is disabled
+        if manual_prompt:
+            edit_prompt = manual_prompt
+        elif analysis is not None:
+            edit_prompt = analysis.remove_only_edit_prompt or analysis.edit_prompt
+        else:
+            edit_prompt = ""
         if not edit_prompt:
             edit_prompt = "Maintain all aspects of the original image exactly as-is."
 
@@ -177,11 +182,13 @@ class TUIRetouchingPipeline:
             else:
                 remove_prompts = list(PROMPTS_REMOVE)
 
-        if retouch_prompts is None:
-            if analysis is not None:
-                retouch_prompts = analysis.retouch_sam_prompts
-            else:
-                retouch_prompts = list(PROMPTS_RETOUCH)
+        # TODO: re-enable retouch pass once remove quality is validated
+        # if retouch_prompts is None:
+        #     if analysis is not None:
+        #         retouch_prompts = analysis.retouch_sam_prompts
+        #     else:
+        #         retouch_prompts = list(PROMPTS_RETOUCH)
+        retouch_prompts = []
 
         mask_result = generate_masks(
             image_path,
@@ -216,35 +223,36 @@ class TUIRetouchingPipeline:
                 passes=["no-op"],
             )
 
-        if two_pass and has_remove and has_retouch:
-            result_img = self._two_pass_inpaint(
-                image_path=image_path,
-                mask_result=mask_result,
-                edit_prompt=edit_prompt,
-                remove_strength=remove_strength,
-                retouch_strength=retouch_strength,
-                num_steps=num_steps,
-                guidance=guidance,
-                seed=seed,
-                letterboxing=letterboxing,
-            )
-            passes = ["remove", "retouch"]
-        else:
-            # Single pass with combined mask and the stronger strength
-            strength = remove_strength if has_remove else retouch_strength
-            combined = mask_result.all_combined
-            mask_pil = Image.fromarray(combined)
-            result_img = self._inpaint_once(
-                input_image=image_path,
-                mask=mask_pil,
-                prompt=edit_prompt,
-                strength=strength,
-                num_steps=num_steps,
-                guidance=guidance,
-                seed=seed,
-                letterboxing=letterboxing,
-            )
-            passes = ["single"]
+        # TODO: re-enable two-pass once retouch quality is validated
+        # if two_pass and has_remove and has_retouch:
+        #     result_img = self._two_pass_inpaint(
+        #         image_path=image_path,
+        #         mask_result=mask_result,
+        #         edit_prompt=edit_prompt,
+        #         remove_strength=remove_strength,
+        #         retouch_strength=retouch_strength,
+        #         num_steps=num_steps,
+        #         guidance=guidance,
+        #         seed=seed,
+        #         letterboxing=letterboxing,
+        #     )
+        #     passes = ["remove", "retouch"]
+
+        # Single remove pass at full strength
+        strength = remove_strength if has_remove else retouch_strength
+        combined = mask_result.all_combined
+        mask_pil = Image.fromarray(combined)
+        result_img = self._inpaint_once(
+            input_image=image_path,
+            mask=mask_pil,
+            prompt=edit_prompt,
+            strength=strength,
+            num_steps=num_steps,
+            guidance=guidance,
+            seed=seed,
+            letterboxing=letterboxing,
+        )
+        passes = ["remove"]
 
         elapsed = time.time() - t0
         print(f"  Done in {elapsed:.1f}s ({', '.join(passes)} pass{'es' if len(passes) > 1 else ''})")
