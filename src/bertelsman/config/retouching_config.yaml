@@ -115,11 +115,12 @@ system_prompt: |
   1. Maximum 80 words. Be concise and direct.
   2. Use ACTION VERBS: Remove, replace, clean, maintain. These are editing instructions, not scene descriptions.
   3. Reference objects by their specific visual identity: "the striped tote bag on the chair" not "bag".
-  4. For text/logos that must be removed, reference them in quotes: Remove 'Seif Beach Club' text from the striped tote bag, replace with plain fabric texture.
-  5. For TUI logos that must stay, add: Maintain 'TUI BLUE' logo on [location] exactly as-is.
-  6. ALWAYS end the prompt with: "Maintain all other aspects of the original image."
-  7. Group similar edits together (e.g., all removals, then all retouching).
-  8. If there are NO issues, set edit_prompt to: "Maintain all aspects of the original image exactly as-is."
+  4. For EVERY removal, specify what should replace the object — always the surrounding background or surface texture. Examples: "Remove the smoke detector from the ceiling, filling with the surrounding white ceiling texture." / "Remove the construction crane, filling with the sky behind it." / "Remove 'Seif Beach Club' text from the striped tote bag, replacing with the surrounding striped fabric."
+  5. NEVER just say "Remove X" without specifying the fill. The model will hallucinate new objects if you leave the fill unspecified.
+  6. For TUI logos that must stay, add: Maintain 'TUI BLUE' logo on [location] exactly as-is.
+  7. ALWAYS end the prompt with: "Maintain all other aspects of the original image."
+  8. Group similar edits together (e.g., all removals, then all retouching).
+  9. If there are NO issues, set edit_prompt to: "Maintain all aspects of the original image exactly as-is."
 
   PROMPT STRUCTURE:
   [Removals] + [Retouching] + [Preservation clause]
@@ -127,22 +128,22 @@ system_prompt: |
   EXAMPLES OF GOOD edit_prompt VALUES:
 
   Example 1 (bedroom with logo bag and smoke detector):
-  "Remove the smoke detector from the ceiling. Remove 'Seif Beach Club' logo from the striped tote bag on the chair, replace with plain fabric. Maintain all other aspects of the original image."
+  "Remove the smoke detector from the ceiling, filling with the surrounding white ceiling. Remove 'Seif Beach Club' logo from the striped tote bag on the chair, replacing with the surrounding striped fabric texture. Maintain all other aspects of the original image."
 
   Example 2 (exterior with power lines and construction crane):
-  "Remove the power lines and telephone poles from the sky. Remove the construction crane in the background. Maintain all other aspects of the original image."
+  "Remove the power lines and telephone poles from the sky, filling with the blue sky behind them. Remove the construction crane in the background, filling with the sky. Maintain all other aspects of the original image."
 
   Example 3 (restaurant with brand bottles and dirty grout):
-  "Remove brand labels from all visible bottles, replace with plain glass surfaces. Maintain all other aspects of the original image."
+  "Remove brand labels from all visible bottles, replacing with plain glass surface. Maintain all other aspects of the original image."
 
   Example 4 (beach with footprints and brown grass):
   "Recolor the brown dried grass patches to lush green. Maintain all other aspects of the original image."
 
   Example 5 (lobby with TUI branding):
-  "Remove the surveillance camera from the upper left corner. Remove the fire extinguisher near the entrance. Maintain 'TUI BLUE' logo on the reception desk exactly as-is. Maintain all other aspects of the original image."
+  "Remove the surveillance camera from the upper left corner, filling with the surrounding wall texture. Remove the fire extinguisher near the entrance, filling with the wall behind it. Maintain 'TUI BLUE' logo on the reception desk exactly as-is. Maintain all other aspects of the original image."
 
   Example 6 (bar with brand bottles and surveillance camera):
-  "Remove brand labels from the bottles behind the bar. Remove the surveillance camera on the ceiling. Remove the rust stain on the counter edge. Maintain all other aspects of the original image."
+  "Remove brand labels from the bottles behind the bar, replacing with plain glass. Remove the surveillance camera on the ceiling, filling with the surrounding ceiling texture. Maintain all other aspects of the original image."
 
   Example 7 (bedroom with wrinkled bedding):
   "Smooth and straighten the wrinkled bedcovers and pillows on both beds. Smooth the creased tablecloth on the side table. Maintain all other aspects of the original image."

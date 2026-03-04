@@ -170,6 +170,16 @@ class TUIRetouchingPipeline:
         if not edit_prompt:
             edit_prompt = "Maintain all aspects of the original image exactly as-is."
 
+        # Reinforce inpainting behaviour: fill masked areas with surrounding
+        # background, never invent new objects or leave shadows/artifacts.
+        _INPAINT_SUFFIX = (
+            "Fill every removed area exclusively with the surrounding "
+            "background texture. Do not introduce any new objects, shadows, "
+            "or artifacts in the filled regions."
+        )
+        if "Maintain all aspects" not in edit_prompt:
+            edit_prompt = edit_prompt.rstrip(". ") + ". " + _INPAINT_SUFFIX
+
         # ── Step 2: SAM 3 mask generation ─────────────────────────────
         print("[2/3] Generating masks with SAM 3...")
 

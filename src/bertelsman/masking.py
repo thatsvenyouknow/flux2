@@ -156,6 +156,10 @@ SAM_BLOCKLIST = [
     "banner",
     "cargo ship",
     "ship on horizon",
+    # Personal items — footwear, accessories
+    "flip-flop",
+    "sandal",
+    "slipper",
 ]
 
 
@@ -206,8 +210,15 @@ def _filter_blocklist(prompts: list[str], blocklist: list[str] = SAM_BLOCKLIST) 
     return filtered
 
 
-# Prepositions / filler words stripped when extracting a short core noun.
-_STRIP_WORDS = {"on", "in", "at", "the", "a", "an", "of", "from", "with", "near", "next", "to", "by"}
+# Prepositions / location words — everything from the first match onward is
+# treated as a location phrase and stripped.  Includes spatial prepositions
+# that were previously missing ("behind", "under", "above", etc.).
+_STRIP_WORDS = {
+    "on", "in", "at", "the", "a", "an", "of", "from", "with",
+    "near", "next", "to", "by", "behind", "under", "over",
+    "above", "below", "between", "beside", "against", "around",
+    "through", "towards", "toward", "inside", "outside", "along",
+}
 
 
 def _expand_prompts(prompts: list[str]) -> list[str]:
@@ -216,26 +227,32 @@ def _expand_prompts(prompts: list[str]) -> list[str]:
     For "green circular sticker on glass door" we generate:
       1. "green circular sticker on glass door"  (original — most specific)
       2. "circular sticker on glass door"         (strip one leading adjective)
-      3. "sticker on glass door"                  (strip more leading adjectives)
+      3. "sticker on glass door"                  (strip more)
       4. "green circular sticker"                 (drop location phrase)
-      5. "sticker"                                (core noun only)
+      5. "circular sticker"                       (strip adjective from object)
 
-    We NEVER generate prompts for the container ("glass door", "door") because
-    that causes SAM to mask the background object instead of the target.
+    We NEVER generate:
+    - Single-word variants from multi-word prompts (too generic → over-masking)
+    - Prompts for the container ("glass door", "door", "tree")
     """
     seen: set[str] = set()
     expanded: list[str] = []
 
-    def _add(p: str) -> None:
+    def _add(p: str, *, allow_single: bool = False) -> None:
         key = p.lower().strip()
-        if key and key not in seen:
-            seen.add(key)
-            expanded.append(p.strip())
+        if not key or key in seen:
+            return
+        if not allow_single and len(key.split()) < 2:
+            return
+        seen.add(key)
+        expanded.append(p.strip())
 
     for prompt in prompts:
-        _add(prompt)
-
         words = prompt.split()
+        # Always add the original prompt (even if 1 word)
+        seen.add(prompt.lower().strip())
+        expanded.append(prompt.strip())
+
         if len(words) <= 2:
             continue
 
@@ -250,16 +267,13 @@ def _expand_prompts(prompts: list[str]) -> list[str]:
         obj_words = words[:prep_idx] if prep_idx is not None else list(words)
 
         # Strip leading adjectives from the full prompt (keep location).
-        # "green circular sticker on glass door" → "circular sticker on glass door" → "sticker on glass door"
         for i in range(1, len(obj_words)):
             _add(" ".join(words[i:]))
 
         # Strip trailing location phrase to get just the object.
-        # "green circular sticker on glass door" → "green circular sticker"
         if prep_idx is not None:
             obj_phrase = " ".join(obj_words)
             _add(obj_phrase)
-            # Also strip leading adjectives from the object phrase.
             for i in range(1, len(obj_words)):
                 _add(" ".join(obj_words[i:]))
 
@@ -396,6 +410,27 @@ DEFAULT_REMOVE_THRESHOLD = 0.35
 DEFAULT_RETOUCH_THRESHOLD = 0.65
 
 
+MAX_MASK_AREA_RATIO = 0.20  # reject masks covering > 20% of the image
+
+
+def _filter_oversized_masks(
+    masks: list[SegmentMask], h: int, w: int, max_ratio: float = MAX_MASK_AREA_RATIO,
+) -> list[SegmentMask]:
+    """Drop individual masks that cover more than *max_ratio* of the image."""
+    total_px = h * w
+    kept: list[SegmentMask] = []
+    dropped = 0
+    for m in masks:
+        area = int((m.mask > 0).sum())
+        if area / total_px > max_ratio:
+            dropped += 1
+        else:
+            kept.append(m)
+    if dropped:
+        print(f"  Dropped {dropped} oversized mask(s) (>{max_ratio*100:.0f}% of image)")
+    return kept
+
+
 def generate_masks(
     image_path: Path | str,
     remove_prompts: list[str] | None = None,
@@ -480,6 +515,11 @@ def generate_masks(
         torch.cuda.empty_cache()
     else:
         session.deactivate()
+
+    # Reject masks that are absurdly large (likely wrong target, e.g. SAM
+    # matched "tree" instead of "sign behind tree").
+    remove_masks = _filter_oversized_masks(remove_masks, h, w)
+    retouch_masks = _filter_oversized_masks(retouch_masks, h, w)
 
     remove_combined = _combine_masks(remove_masks, h, w)
     retouch_combined = _combine_masks(retouch_masks, h, w)
