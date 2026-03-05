@@ -86,6 +86,9 @@ class Issue:
         return self.sam_label.strip() if self.sam_label.strip() else self.description
 
 
+MIN_VLM_CONFIDENCE = 60  # drop issues below this VLM confidence score
+
+
 @dataclass
 class VLMAnalysis:
     scene_description: str = ""
@@ -103,15 +106,28 @@ class VLMAnalysis:
     def retouch_issues(self) -> list[Issue]:
         return [i for i in self.issues if i.is_retouch]
 
+    _ALWAYS_KEEP_CATEGORIES = {"logo_brand"}
+
+    def _confident_issues(
+        self, issues: list[Issue], min_conf: float = MIN_VLM_CONFIDENCE,
+    ) -> list[Issue]:
+        kept: list[Issue] = []
+        for i in issues:
+            if i.category in self._ALWAYS_KEEP_CATEGORIES or i.confidence >= min_conf:
+                kept.append(i)
+            else:
+                print(f"  Dropped low-confidence issue ({i.confidence:.0f}%): {i.sam_label or i.description}")
+        return kept
+
     @property
     def remove_sam_prompts(self) -> list[str]:
-        """Short SAM-friendly labels for objects to remove."""
-        return [i.sam_prompt for i in self.remove_issues]
+        """Short SAM-friendly labels for objects to remove (confidence-filtered)."""
+        return [i.sam_prompt for i in self._confident_issues(self.remove_issues)]
 
     @property
     def retouch_sam_prompts(self) -> list[str]:
-        """Short SAM-friendly labels for items to retouch."""
-        return [i.sam_prompt for i in self.retouch_issues]
+        """Short SAM-friendly labels for items to retouch (confidence-filtered)."""
+        return [i.sam_prompt for i in self._confident_issues(self.retouch_issues)]
 
     @property
     def remove_descriptions(self) -> list[str]:
@@ -195,6 +211,10 @@ def _parse_vlm_json(raw_text: str) -> VLMAnalysis:
     except (json.JSONDecodeError, ValueError):
         return VLMAnalysis(edit_prompt=raw_text.strip())
 
+    # Gemini 3.1+ sometimes wraps the response in a JSON array
+    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+        data = data[0]
+
     if not isinstance(data, dict):
         return VLMAnalysis(edit_prompt=raw_text.strip())
 
@@ -224,7 +244,7 @@ def _parse_vlm_json(raw_text: str) -> VLMAnalysis:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-DEFAULT_VLM_MODEL = "gemini-2.5-pro"
+DEFAULT_VLM_MODEL = "gemini-3.1-pro-preview"
 
 
 def analyze_image(

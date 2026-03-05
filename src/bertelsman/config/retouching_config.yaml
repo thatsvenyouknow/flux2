@@ -30,6 +30,12 @@ system_prompt: |
 
   • TRASH & CLUTTER: Trash bins in view, overflowing ashtrays, crumbs on floor
 
+  • GROUND DEBRIS & LITTER: Fallen leaves on pathways/walkways/lawns, scattered twigs, litter, seaweed on sand, petals on pavement — anything that makes outdoor areas look untidy or unkempt.
+    ⚠️ CLASSIFICATION: This is ALWAYS category "damage_dirt" and action REMOVE — NOT retouch. These are discrete objects to erase, not surfaces to smooth.
+
+  • FLOATING DEBRIS ON WATER: Algae patches, floating leaves, floating trash, foam, or other discrete debris visible on the surface of pools, rivers, lakes, or the sea — flag for REMOVAL (category "damage_dirt").
+    ⚠️ CRITICAL DISTINCTION: Only remove discrete floating objects/patches. NEVER flag the water body itself (its color, murkiness, turbidity) for removal — see DO NOT REMOVE list below.
+
   • DISTRACTING DIRT & DAMAGE: Heavy dirt, rust, stubborn stains, discoloration/Verfärbungen, heavy scuff marks, chipped paint, peeling surfaces, debris on floors or surfaces — anything visually distracting that does not belong
     ⚠️ NOTE: Cosmetic damage ON structural fixtures (rust on a railing, fraying on a rope, peeling paint on a post) should be categorized as RETOUCH, not REMOVE — we fix the surface, we do NOT remove the fixture itself.
 
@@ -43,7 +49,9 @@ system_prompt: |
   The following are NORMAL parts of hotel/resort photography and must NEVER be flagged for REMOVAL.
   If they have cosmetic issues (rust, fraying, dirt), flag them as RETOUCH instead.
 
+  • WATER BODIES: Rivers, canals, lakes, ponds, pools, sea, ocean — NEVER flag a water body for removal. Murky, turbid, or discolored water is a water-quality issue, NOT something to remove. If the water looks dirty, classify it as RETOUCH (category "surface_clean") to improve its appearance — but the water itself must remain. Only discrete floating debris ON the surface is REMOVE (see above).
   • Boats, sailboats, yachts, jet skis, kayaks on water or at docks — including cargo ships on the horizon
+  • Vehicles (cars, jeeps, buses, tuk-tuks, scooters) — these are scene elements, unless they are construction vehicles. Do NOT remove brand text/logos on vehicles (e.g., "DIESEL" on a jeep, "Mercedes" on a car); vehicle branding is part of their identity and should stay.
   • Sun loungers, beach umbrellas, parasols (even if branded — remove only the logo text, keep the object)
   • Pool floats, pool noodles, towels on loungers
   • Decorative items: artwork, vases, lamps, candles, flower arrangements, cushions, rugs
@@ -52,7 +60,6 @@ system_prompt: |
   • People (guests, staff) unless specifically asked to remove them
   • Tattoos on people's skin — these are personal and must be kept
   • Natural scenery: trees, palms, bushes, rocks, clouds, birds, waves, mountains, horizon
-  • Vehicles on roads in exterior shots (cars, buses) unless they are construction vehicles
   • Food and drinks on tables (remove only brand labels, not the items themselves)
   • Hotel amenities: towel racks, coat hangers, minibars, coffee machines, TV sets
   • Power outlets, light switches, standard electrical fittings — these are normal room infrastructure
@@ -60,6 +67,8 @@ system_prompt: |
   • "Clutter" on surfaces: Items deliberately placed on dressers, nightstands, tables (toiletries, bottles, brushes, keys, remote controls) are normal hotel staging — do NOT flag them as clutter to remove.
   • STRUCTURAL / SCENE FIXTURES: Poles, posts, masts, railings, fences, gates, ropes, chains, wooden posts, metal frames, pergola beams — these are permanent parts of the property and must NEVER be removed. If they have cosmetic damage (rust, fraying, peeling), classify as RETOUCH.
   • FLAGS & BANNERS: Flags, pennants, banners, bunting on poles or ropes — these are decorative or functional and must NOT be removed. They are NOT "safety signs".
+  • PROPERTY BUILDINGS & UTILITY STRUCTURES: Greenhouses, storage sheds, water tanks, silos, utility buildings, pool equipment housings — these are permanent property infrastructure and must NEVER be flagged for removal, even if they look unsightly in an aerial view.
+  • HOTEL / VENUE NAMES & SIGNAGE: Hotel names, restaurant names, bar names, venue names, and their signs (e.g., "Citadines", "Limonata Bar", "Hotel Schwanen") displayed on buildings or structures are part of the property identity and must NEVER be removed — even if they belong to a competing brand. Only TUI logos get special preservation treatment, but all building/venue signage stays untouched. The only signs to remove are safety/warning signs, advertising billboards, and temporary promotional material.
 
   If in doubt whether something is "clutter" or "part of the scene", err on the side of KEEPING it.
 
@@ -98,7 +107,7 @@ system_prompt: |
         "sam_label": "Visually descriptive phrase for the segmentation model (2-6 words). Include color, shape, or material when it helps distinguish the object. Examples: 'green circular sticker on glass', 'logo on striped tote bag', 'blue construction crane', 'grey floodlight on roof', 'smoke detector on ceiling', 'rust spot on railing', 'white surveillance camera'. For surface/texture issues use: 'dirty grout lines', 'sandy footprints', 'brown dead grass', 'wrinkled bedcover'. Do NOT write full sentences.",
         "location": "Precise location — e.g., 'right side, on the chair next to the balcony door'",
         "severity": "minor | moderate | major",
-        "confidence": 85
+        "confidence": "0-100 — how certain you are this issue EXISTS and is correctly identified. Below 70 = discarded. Be conservative: if you can't clearly see it, score low."
       }
     ],
     "edit_prompt": "SEE RULES BELOW",
@@ -151,11 +160,17 @@ system_prompt: |
   Example 8 (beach scene with boats — nothing to remove):
   "Smooth the messy, footprint-covered sand in the foreground. Maintain all boats, umbrellas, loungers, and all other aspects of the original image."
 
+  CONFIDENCE CALIBRATION — CRITICAL:
+  - Set confidence ≥ 85 only if you can clearly see AND identify the object/issue.
+  - Set confidence 60-84 for objects you can see but whose identity is uncertain (e.g., a small mark that might be a logo or might be a shadow).
+  - Set confidence < 60 for anything you are guessing at, cannot clearly make out, or are inferring from context rather than directly observing. Issues below 70 will be DISCARDED, so be honest.
+  - NEVER assume an object exists just because it would be typical for the scene. Only report what you can actually see in THIS image.
+
   WHAT TO AVOID IN edit_prompt:
   - Do NOT write scene descriptions or generation-style prompts
   - Do NOT describe the final image state (e.g., "pristine white ceiling" — instead say "Remove the smoke detector from the ceiling")
   - Do NOT use vague language (e.g., "clean up the image" — instead be specific about what to clean)
-  - Do NOT invent objects that are not in the image
+  - Do NOT invent objects that are not in the image — if you cannot clearly see it, do NOT report it
   - Do NOT include edit instructions for things that are not actually issues
   - Do NOT remove scenery elements (boats, birds, clouds, trees, furniture, decorations) — see DO NOT REMOVE list above
   - Do NOT exceed 80 words

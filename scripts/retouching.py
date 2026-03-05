@@ -45,8 +45,8 @@ def main():
                         help="Override edit prompt (skip VLM prompt generation).")
     parser.add_argument("--task", type=str, default=None,
                         help="Extra instruction for the VLM on top of the config.")
-    parser.add_argument("--vlm-model", type=str, default="gemini-2.5-pro",
-                        help="Gemini model (gemini-2.5-pro, gemini-2.0-pro, gemini-2.0-flash).")
+    parser.add_argument("--vlm-model", type=str, default="gemini-3.1-pro-preview",
+                        help="Gemini model (gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro).")
     parser.add_argument("--config", type=str, default=None,
                         help="Path to retouching YAML config (uses bundled default).")
 
@@ -72,8 +72,8 @@ def main():
                         help="Inpainting strength for remove pass (1.0 = full removal).")
     parser.add_argument("--retouch-strength", type=float, default=0.55,
                         help="Inpainting strength for retouch pass.")
-    parser.add_argument("--num-steps", type=int, default=4,
-                        help="Flux2 denoising steps.")
+    parser.add_argument("--num-steps", type=int, default=8,
+                        help="Flux2 denoising steps (more = better fill quality).")
     parser.add_argument("--guidance", type=float, default=4.0,
                         help="Flux2 guidance scale.")
     parser.add_argument("--seed", type=int, default=None,

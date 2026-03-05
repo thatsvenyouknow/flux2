@@ -156,6 +156,25 @@ SAM_BLOCKLIST = [
     "banner",
     "cargo ship",
     "ship on horizon",
+    # Property buildings & utility structures
+    "greenhouse",
+    "water tank",
+    "cylindrical tank",
+    "storage shed",
+    "utility building",
+    "silo",
+    # Water bodies — never mask entire water surfaces
+    "murky water",
+    "canal water",
+    "river water",
+    "lake water",
+    "pond water",
+    "ocean water",
+    # Vehicles — branding stays
+    "jeep",
+    "scooter",
+    "tuk-tuk",
+    "car",
     # Personal items — footwear, accessories
     "flip-flop",
     "sandal",
@@ -195,13 +214,27 @@ def _combine_masks(masks: list[SegmentMask], h: int, w: int) -> np.ndarray:
     return np.clip(stacked.max(axis=0), 0, 255).astype(np.uint8)
 
 
+def _extract_object_part(prompt: str) -> str:
+    """Return the object portion of a prompt, stripping the location phrase.
+
+    "grey utility box on pole" → "grey utility box"
+    "smoke detector on ceiling" → "smoke detector"
+    "yellow construction crane" → "yellow construction crane"
+    """
+    words = prompt.split()
+    for i, w in enumerate(words):
+        if w.lower() in _STRIP_WORDS and i > 0:
+            return " ".join(words[:i])
+    return prompt
+
+
 def _filter_blocklist(prompts: list[str], blocklist: list[str] = SAM_BLOCKLIST) -> list[str]:
-    """Remove prompts that mention blocklisted objects (case-insensitive substring match)."""
+    """Remove prompts whose *object* (not location) mentions a blocklisted term."""
     filtered = []
     blocked = []
     for prompt in prompts:
-        lower = prompt.lower()
-        if any(term in lower for term in blocklist):
+        obj_part = _extract_object_part(prompt).lower()
+        if any(term in obj_part for term in blocklist):
             blocked.append(prompt)
         else:
             filtered.append(prompt)
@@ -222,34 +255,38 @@ _STRIP_WORDS = {
 
 
 def _expand_prompts(prompts: list[str]) -> list[str]:
-    """Expand each prompt into SAM variants to improve recall without over-masking.
+    """Expand each prompt into a small set of SAM variants.
+
+    Strategy: strip at most ONE leading adjective and optionally drop the
+    location phrase.  This keeps variants meaningful and avoids fragments
+    like "units on flat roofs" or "green vegetation".
 
     For "green circular sticker on glass door" we generate:
-      1. "green circular sticker on glass door"  (original — most specific)
-      2. "circular sticker on glass door"         (strip one leading adjective)
-      3. "sticker on glass door"                  (strip more)
-      4. "green circular sticker"                 (drop location phrase)
-      5. "circular sticker"                       (strip adjective from object)
+      1. "green circular sticker on glass door"  (original)
+      2. "circular sticker on glass door"         (strip 1 leading adj, keep loc)
+      3. "green circular sticker"                 (drop location)
+      4. "circular sticker"                       (strip 1 adj + drop loc)
+
+    For "logo on striped tote bag" (short object) we also simplify location:
+      1. "logo on striped tote bag"               (original)
+      2. "logo on tote bag"                       (simplify location)
 
     We NEVER generate:
-    - Single-word variants from multi-word prompts (too generic → over-masking)
-    - Prompts for the container ("glass door", "door", "tree")
+    - Single-word variants from multi-word prompts
+    - Prompts for the container ("glass door", "tree", "flat roofs")
     """
     seen: set[str] = set()
     expanded: list[str] = []
 
-    def _add(p: str, *, allow_single: bool = False) -> None:
+    def _add(p: str) -> None:
         key = p.lower().strip()
-        if not key or key in seen:
-            return
-        if not allow_single and len(key.split()) < 2:
+        if not key or key in seen or len(key.split()) < 2:
             return
         seen.add(key)
         expanded.append(p.strip())
 
     for prompt in prompts:
         words = prompt.split()
-        # Always add the original prompt (even if 1 word)
         seen.add(prompt.lower().strip())
         expanded.append(prompt.strip())
 
@@ -263,19 +300,27 @@ def _expand_prompts(prompts: list[str]) -> list[str]:
                 prep_idx = i
                 break
 
-        # Object phrase = everything before the preposition (or the full prompt).
         obj_words = words[:prep_idx] if prep_idx is not None else list(words)
+        loc_words = words[prep_idx:] if prep_idx is not None else []
 
-        # Strip leading adjectives from the full prompt (keep location).
-        for i in range(1, len(obj_words)):
-            _add(" ".join(words[i:]))
+        # Variant A: strip ONE leading adjective, keep location.
+        if len(obj_words) > 1:
+            _add(" ".join(words[1:]))
 
-        # Strip trailing location phrase to get just the object.
+        # Variant B: object phrase only (drop location).
         if prep_idx is not None:
             obj_phrase = " ".join(obj_words)
             _add(obj_phrase)
-            for i in range(1, len(obj_words)):
-                _add(" ".join(obj_words[i:]))
+            # Variant C: strip 1 adj from object phrase.
+            if len(obj_words) > 2:
+                _add(" ".join(obj_words[1:]))
+
+        # Variant D: for short objects (1-2 words), simplify the location
+        # by stripping adjectives inside it.  "logo on striped tote bag"
+        # → "logo on tote bag".  Helps SAM recall without matching the
+        # container itself.
+        if len(obj_words) <= 2 and len(loc_words) >= 3:
+            _add(" ".join(obj_words + loc_words[:1] + loc_words[2:]))
 
     return expanded
 
@@ -467,7 +512,8 @@ def generate_masks(
     retouch_prompts = retouch_prompts if retouch_prompts is not None else list(PROMPTS_RETOUCH)
 
     remove_prompts = _filter_blocklist(remove_prompts)
-    retouch_prompts = _filter_blocklist(retouch_prompts)
+    # Blocklist only applies to removal — retouch may need to mask
+    # surfaces like water bodies, greenhouses, etc.
 
     # Expand each prompt into variants (e.g. "green sticker on glass" → also "sticker")
     # so SAM has multiple chances to find the object.

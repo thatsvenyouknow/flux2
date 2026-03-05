@@ -207,7 +207,7 @@ def test_masks(
     output_path: Path,
     *,
     use_vlm: bool = False,
-    vlm_model: str = "gemini-2.5-pro",
+    vlm_model: str = "gemini-3.1-pro-preview",
     sam_model: str = "facebook/sam3",
     sam_remove_threshold: float = 0.40,
     sam_retouch_threshold: float = 0.65,
@@ -320,13 +320,13 @@ def test_pipeline(
     *,
     flux_model: str = "flux.2-klein-9b-fp8",
     fast: bool = False,
-    vlm_model: str = "gemini-2.5-pro",
+    vlm_model: str = "gemini-3.1-pro-preview",
     sam_model: str = "facebook/sam3",
     skip_vlm: bool = False,
     two_pass: bool = False,
     remove_strength: float = 1.0,
     retouch_strength: float = 0.55,
-    num_steps: int = 4,
+    num_steps: int = 8,
     guidance: float = 4.0,
     seed: int | None = None,
     sam_remove_threshold: float = 0.4,
@@ -467,8 +467,8 @@ def main() -> None:
                         help="[pipeline] Inpainting strength for remove pass (1.0 = full removal).")
     parser.add_argument("--retouch-strength", type=float, default=0.55,
                         help="[pipeline] Inpainting strength for retouch pass.")
-    parser.add_argument("--num-steps", type=int, default=4,
-                        help="[pipeline] Flux2 denoising steps.")
+    parser.add_argument("--num-steps", type=int, default=8,
+                        help="[pipeline] Flux2 denoising steps (more = better fill quality).")
     parser.add_argument("--guidance", type=float, default=4.0,
                         help="[pipeline] Flux2 guidance scale.")
     parser.add_argument("--seed", type=int, default=None,
@@ -489,7 +489,7 @@ def main() -> None:
                         help="Mask dilation in pixels.")
     parser.add_argument("--max-side", type=int, default=2048,
                         help="Max image dimension — large images downscaled at pipeline start (default: 2048).")
-    parser.add_argument("--vlm-model", type=str, default="gemini-2.5-pro",
+    parser.add_argument("--vlm-model", type=str, default="gemini-3.1-pro-preview",
                         help="Gemini VLM model.")
 
     args = parser.parse_args()

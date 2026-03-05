@@ -98,7 +98,7 @@ class TUIRetouchingPipeline:
         two_pass: bool = False,
         remove_strength: float = 1.0,
         retouch_strength: float = 0.55,
-        num_steps: int = 4,
+        num_steps: int = 8,
         guidance: float = 4.0,
         seed: int | None = None,
         letterboxing: bool = True,
@@ -154,6 +154,10 @@ class TUIRetouchingPipeline:
             print(f"  Issues: {len(analysis.issues)} "
                   f"({len(analysis.remove_issues)} remove, "
                   f"{len(analysis.retouch_issues)} retouch)")
+            for issue in analysis.issues:
+                action = "REMOVE" if issue.is_remove else "RETOUCH"
+                print(f"    [{action}] {issue.sam_label or issue.description}  "
+                      f"(confidence={issue.confidence:.0f}%)")
             if analysis.tui_logos_present:
                 print(f"  TUI logos (preserved): {analysis.tui_logos_present}")
             print(f"  Edit prompt: {analysis.edit_prompt}")
